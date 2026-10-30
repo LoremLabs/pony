@@ -1,0 +1,111 @@
+name: release
+
+# Cut a release by pushing a tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+# A tag with a hyphen (v0.1.0-rc1) publishes a GitHub prerelease and leaves
+# the Homebrew formula where it is.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: test
+        run: go vet ./... && go test ./...
+
+      # pony is pure Go with CGO off, so one runner builds every platform.
+      # Go's linker gives darwin/arm64 binaries the ad-hoc signature Apple
+      # Silicon requires, cross-compiled or not.
+      - name: build, package, checksum
+        id: pkg
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          LDFLAGS="-s -w -X main.Version=${VERSION} -X main.Commit=${GITHUB_SHA} -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X main.InstallMethod=release"
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64; do
+            os="${target%/*}"; arch="${target#*/}"
+            stage="dist/stage/${os}_${arch}"
+            mkdir -p "$stage"
+            exe="pony"; [ "$os" = windows ] && exe="pony.exe"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" -o "$stage/$exe" ./cmd/pony
+            cp README.md LICENSE "$stage/"
+            if [ "$os" = windows ]; then
+              (cd "$stage" && zip -q "../../pony_${VERSION}_${os}_${arch}.zip" "$exe" README.md LICENSE)
+            else
+              tar -C "$stage" -czf "dist/pony_${VERSION}_${os}_${arch}.tar.gz" "$exe" README.md LICENSE
+            fi
+          done
+          (cd dist && sha256sum pony_*.tar.gz pony_*.zip > checksums.txt && cat checksums.txt)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: check the linux/amd64 build runs
+        run: |
+          set -euo pipefail
+          tar -xzf "dist/pony_${{ steps.pkg.outputs.version }}_linux_amd64.tar.gz" -C "$RUNNER_TEMP" pony
+          "$RUNNER_TEMP/pony" version
+          "$RUNNER_TEMP/pony" version --json | grep -q "\"version\":\"${{ steps.pkg.outputs.version }}\""
+
+      # Idempotent, so "Re-run failed jobs" works: upload --clobber when the
+      # release already exists.
+      - name: publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          files=(dist/pony_*.tar.gz dist/pony_*.zip dist/checksums.txt)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            pre=""
+            [[ "${{ steps.pkg.outputs.prerelease }}" == "true" ]] && pre="--prerelease"
+            gh release create "$TAG" "${files[@]}" --title "$TAG" --generate-notes $pre
+          fi
+
+      # HOMEBREW_TAP_TOKEN: a fine-grained token with Contents read/write on
+      # LoremLabs/homebrew-onepony only.
+      - name: update Homebrew tap
+        if: steps.pkg.outputs.prerelease == 'false'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.pkg.outputs.version }}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          sha() { awk -v f="pony_${VERSION}_$1.tar.gz" '$2==f{print $1}' dist/checksums.txt; }
+
+          sed -e "s|@VERSION@|${VERSION}|g" \
+              -e "s|@BASE@|${BASE}|g" \
+              -e "s|@SHA_DARWIN_ARM64@|$(sha darwin_arm64)|g" \
+              -e "s|@SHA_DARWIN_AMD64@|$(sha darwin_amd64)|g" \
+              -e "s|@SHA_LINUX_ARM64@|$(sha linux_arm64)|g" \
+              -e "s|@SHA_LINUX_AMD64@|$(sha linux_amd64)|g" \
+              .github/homebrew/pony.rb.tmpl > pony.rb
+          if grep -qE '@[A-Z_0-9]+@|sha256 ""' pony.rb; then echo "unfilled placeholder in pony.rb" >&2; cat pony.rb >&2; exit 1; fi
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/LoremLabs/homebrew-onepony.git" tap
+          mkdir -p tap/Formula
+          cp pony.rb tap/Formula/pony.rb
+          cd tap
+          git config user.name "onepony-release-bot"
+          git config user.email "onepony-release-bot@users.noreply.github.com"
+          git add Formula/pony.rb
+          git commit -m "pony ${VERSION}" || { echo "formula unchanged"; exit 0; }
+          git push origin HEAD:main

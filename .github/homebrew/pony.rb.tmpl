@@ -1,0 +1,36 @@
+class Pony < Formula
+  desc "Talk to your OnePony ponies from the terminal"
+  homepage "https://www.onepony.com"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "@BASE@/pony_@VERSION@_darwin_arm64.tar.gz"
+      sha256 "@SHA_DARWIN_ARM64@"
+    end
+    on_intel do
+      url "@BASE@/pony_@VERSION@_darwin_amd64.tar.gz"
+      sha256 "@SHA_DARWIN_AMD64@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "@BASE@/pony_@VERSION@_linux_arm64.tar.gz"
+      sha256 "@SHA_LINUX_ARM64@"
+    end
+    on_intel do
+      url "@BASE@/pony_@VERSION@_linux_amd64.tar.gz"
+      sha256 "@SHA_LINUX_AMD64@"
+    end
+  end
+
+  def install
+    bin.install "pony"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/pony version")
+  end
+end
