@@ -1,8 +1,17 @@
 class Pony < Formula
   desc "Talk to your OnePony ponies from the terminal"
   homepage "https://www.onepony.com"
-  version "@VERSION@"
   license "MIT"
+
+  # Prebuilt kegs from the release. Pouring one skips Homebrew's
+  # build-from-source checks, so no Command Line Tools are needed.
+  bottle do
+    root_url "@BASE@"
+    sha256 cellar: :any_skip_relocation, arm64_big_sur: "@BOTTLE_ARM64_BIG_SUR@"
+    sha256 cellar: :any_skip_relocation, big_sur:       "@BOTTLE_BIG_SUR@"
+    sha256 cellar: :any_skip_relocation, arm64_linux:   "@BOTTLE_ARM64_LINUX@"
+    sha256 cellar: :any_skip_relocation, x86_64_linux:  "@BOTTLE_X86_64_LINUX@"
+  end
 
   on_macos do
     on_arm do

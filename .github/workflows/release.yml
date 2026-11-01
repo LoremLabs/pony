@@ -51,7 +51,22 @@ jobs:
               tar -C "$stage" -czf "dist/pony_${VERSION}_${os}_${arch}.tar.gz" "$exe" README.md LICENSE
             fi
           done
-          (cd dist && sha256sum pony_*.tar.gz pony_*.zip > checksums.txt && cat checksums.txt)
+
+          # Homebrew bottles: the same binaries laid out as an installed keg
+          # (pony/<version>/bin/pony). Without a bottle Homebrew treats the
+          # formula as a build from source and refuses to run until the Xcode
+          # Command Line Tools are installed and current. Homebrew pours a macOS
+          # bottle on that release or any later one, so big_sur (macOS 11, Go's
+          # minimum) covers every Mac.
+          for pair in darwin_arm64:arm64_big_sur darwin_amd64:big_sur linux_arm64:arm64_linux linux_amd64:x86_64_linux; do
+            plat="${pair%%:*}"; tag="${pair#*:}"
+            keg="dist/keg/${tag}/pony/${VERSION}"
+            mkdir -p "$keg/bin"
+            cp "dist/stage/${plat}/pony" "$keg/bin/pony"
+            cp README.md LICENSE "$keg/"
+            tar -C "dist/keg/${tag}" -czf "dist/pony-${VERSION}.${tag}.bottle.tar.gz" pony
+          done
+          (cd dist && sha256sum pony_*.tar.gz pony_*.zip pony-*.bottle.tar.gz > checksums.txt && cat checksums.txt)
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           if [[ "$TAG" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
 
@@ -70,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          files=(dist/pony_*.tar.gz dist/pony_*.zip dist/checksums.txt)
+          files=(dist/pony_*.tar.gz dist/pony_*.zip dist/pony-*.bottle.tar.gz dist/checksums.txt)
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
           else
@@ -90,15 +105,20 @@ jobs:
           VERSION="${{ steps.pkg.outputs.version }}"
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
           sha() { awk -v f="pony_${VERSION}_$1.tar.gz" '$2==f{print $1}' dist/checksums.txt; }
+          bsha() { awk -v f="pony-${VERSION}.$1.bottle.tar.gz" '$2==f{print $1}' dist/checksums.txt; }
 
           sed -e "s|@VERSION@|${VERSION}|g" \
               -e "s|@BASE@|${BASE}|g" \
+              -e "s|@BOTTLE_ARM64_BIG_SUR@|$(bsha arm64_big_sur)|g" \
+              -e "s|@BOTTLE_BIG_SUR@|$(bsha big_sur)|g" \
+              -e "s|@BOTTLE_ARM64_LINUX@|$(bsha arm64_linux)|g" \
+              -e "s|@BOTTLE_X86_64_LINUX@|$(bsha x86_64_linux)|g" \
               -e "s|@SHA_DARWIN_ARM64@|$(sha darwin_arm64)|g" \
               -e "s|@SHA_DARWIN_AMD64@|$(sha darwin_amd64)|g" \
               -e "s|@SHA_LINUX_ARM64@|$(sha linux_arm64)|g" \
               -e "s|@SHA_LINUX_AMD64@|$(sha linux_amd64)|g" \
               .github/homebrew/pony.rb.tmpl > pony.rb
-          if grep -qE '@[A-Z_0-9]+@|sha256 ""' pony.rb; then echo "unfilled placeholder in pony.rb" >&2; cat pony.rb >&2; exit 1; fi
+          if grep -qE '@[A-Z_0-9]+@|sha256 ""|: ""' pony.rb; then echo "unfilled placeholder in pony.rb" >&2; cat pony.rb >&2; exit 1; fi
 
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/LoremLabs/homebrew-onepony.git" tap
           mkdir -p tap/Formula
