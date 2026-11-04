@@ -24,8 +24,8 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: |
-          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64; do
-            GOOS="${target%/*}" GOARCH="${target#*/}" go build -o /dev/null ./cmd/pony
-          done
+          set -euo pipefail
+          printf '%s\n' darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64 |
+            xargs -n1 -P "$(nproc)" bash -c 'GOOS="${1%/*}" GOARCH="${1#*/}" go build -o /dev/null ./cmd/pony' _
       - name: install.sh parses
         run: bash -n install.sh

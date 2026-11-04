@@ -27,7 +27,10 @@ jobs:
 
       # pony is pure Go with CGO off, so one runner builds every platform.
       # Go's linker gives darwin/arm64 binaries the ad-hoc signature Apple
-      # Silicon requires, cross-compiled or not.
+      # Silicon requires, cross-compiled or not. The targets share nothing,
+      # so they build side by side; xargs exits non-zero if any one fails,
+      # and pipefail makes that fail this step, so no release goes out
+      # missing a platform.
       - name: build, package, checksum
         id: pkg
         env:
@@ -38,7 +41,10 @@ jobs:
           VERSION="${TAG#v}"
           LDFLAGS="-s -w -X main.Version=${VERSION} -X main.Commit=${GITHUB_SHA} -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X main.InstallMethod=release"
           mkdir -p dist
-          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64; do
+          export VERSION LDFLAGS
+          package_target() {
+            set -euo pipefail
+            target="$1"
             os="${target%/*}"; arch="${target#*/}"
             stage="dist/stage/${os}_${arch}"
             mkdir -p "$stage"
@@ -50,7 +56,10 @@ jobs:
             else
               tar -C "$stage" -czf "dist/pony_${VERSION}_${os}_${arch}.tar.gz" "$exe" README.md LICENSE
             fi
-          done
+          }
+          export -f package_target
+          printf '%s\n' darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/arm64 windows/amd64 |
+            xargs -n1 -P "$(nproc)" bash -c 'package_target "$1"' _
 
           # Homebrew bottles: the same binaries laid out as an installed keg
           # (pony/<version>/bin/pony). Without a bottle Homebrew treats the
