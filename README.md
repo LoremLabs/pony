@@ -35,15 +35,37 @@ Gatekeeper until you allow it under System Settings › Privacy & Security, or
 run `xattr -d com.apple.quarantine pony`. Windows may show a SmartScreen
 notice the first time.
 
+## Sign in
+
+Make a token on your OnePony Account page, under Command line
+(https://www.onepony.com/settings/account): give it a name, choose which
+ponies it reaches and how long it lasts. It's shown once. Then:
+
+```sh
+export ONEPONY_TOKEN=pony_…
+pony whoami
+```
+
+A token is as good as your account for the ponies it reaches, so keep it as
+you would a password. Revoke it on the same page and it stops working at
+once. A browser sign-in (`pony login`) is on the way.
+
 ## Use
 
 ```sh
+pony whoami            # the account your token signs in as, and what it reaches
+pony list              # your ponies, and what each is doing
+pony list --json       # the same, for scripts
 pony version
-pony help
+pony help [command]
 ```
 
-Signing in and talking to a pony are on the way: `pony login`, `pony list`,
-`pony ask`, `pony status` and `pony watch`.
+`--server URL` (or `ONEPONY_SERVER`) talks to another OnePony server; plain
+`http://` is allowed only for `localhost`. Output for people goes to stdout,
+anything else to stderr, and `--json` prints one JSON value. A token is never
+printed.
+
+Talking to a pony is on the way: `pony ask`, `pony status` and `pony watch`.
 
 ### Exit codes
 

@@ -1,0 +1,194 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"text/tabwriter"
+
+	"github.com/loremlabs/pony/internal/api"
+)
+
+// getenv is os.Getenv; tests replace it.
+var getenv = os.Getenv
+
+const accountPage = "/settings/account"
+
+// connect builds the API client from --server (else ONEPONY_SERVER, else
+// the default) and ONEPONY_TOKEN. A server other than the default is named
+// on stderr, so a script's output says where it talked.
+func connect(server string, b Build, stderr io.Writer) (*api.Client, int) {
+	if server == "" {
+		server = getenv("ONEPONY_SERVER")
+	}
+	token := strings.TrimSpace(getenv("ONEPONY_TOKEN"))
+	c, err := api.New(server, token, b.Version)
+	if err != nil {
+		fmt.Fprintf(stderr, "pony: %v\n", err)
+		return nil, ExitUsage
+	}
+	if c.Server != api.DefaultServer {
+		fmt.Fprintf(stderr, "pony: using %s\n", c.Server)
+	}
+	if token == "" {
+		fmt.Fprintf(stderr, "pony: not signed in. Make a token on your Account page (%s%s) and set ONEPONY_TOKEN to it.\n", c.Server, accountPage)
+		return nil, ExitAuth
+	}
+	if !api.ValidToken(token) {
+		fmt.Fprintf(stderr, "pony: ONEPONY_TOKEN isn't a pony token (they start with pony_). Copy it again from %s%s.\n", c.Server, accountPage)
+		return nil, ExitAuth
+	}
+	return c, ExitOK
+}
+
+// failed reports an API error on stderr and returns its exit code.
+func failed(err error, c *api.Client, stderr io.Writer) int {
+	var ae *api.Error
+	var ne *api.NetError
+	switch {
+	case errors.As(err, &ae):
+		switch {
+		case ae.Status == 401:
+			fmt.Fprintf(stderr, "pony: not signed in: the token was revoked, has expired, or isn't one. Make another on %s%s.\n", c.Server, accountPage)
+			return ExitAuth
+		case ae.Status == 403:
+			fmt.Fprintf(stderr, "pony: not allowed: %s\n", ae)
+			return ExitAuth
+		case ae.Status == 404:
+			fmt.Fprintf(stderr, "pony: not found: %s\n", ae)
+			return ExitNotFound
+		default:
+			fmt.Fprintf(stderr, "pony: %s (HTTP %d)\n", ae, ae.Status)
+			return ExitError
+		}
+	case errors.As(err, &ne):
+		fmt.Fprintf(stderr, "pony: %v\n", ne)
+		return ExitTimeout
+	default:
+		fmt.Fprintf(stderr, "pony: %v\n", err)
+		return ExitError
+	}
+}
+
+// parse handles a command's flags; ok false means return code now.
+func parse(fs *flag.FlagSet, args []string, maxArgs int) (code int, ok bool) {
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return ExitOK, false
+		}
+		return ExitUsage, false
+	}
+	if fs.NArg() > maxArgs {
+		fs.Usage()
+		return ExitUsage, false
+	}
+	return ExitOK, true
+}
+
+func printJSON(stdout, stderr io.Writer, v any) int {
+	enc := json.NewEncoder(stdout)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		fmt.Fprintf(stderr, "pony: %v\n", err)
+		return ExitError
+	}
+	return ExitOK
+}
+
+const serverHelp = "OnePony server (default $ONEPONY_SERVER, else " + api.DefaultServer + ")"
+
+func runWhoami(args []string, b Build, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("whoami", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print the answer as JSON")
+	server := fs.String("server", "", serverHelp)
+	fs.Usage = func() {
+		fmt.Fprint(stderr, "Usage: pony whoami [--json]\n\nShow the account your token signs in as, and what the token reaches.\nThe token is read from ONEPONY_TOKEN.\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	if code, ok := parse(fs, args, 0); !ok {
+		return code
+	}
+	c, code := connect(*server, b, stderr)
+	if c == nil {
+		return code
+	}
+	me, err := c.Me(context.Background())
+	if err != nil {
+		return failed(err, c, stderr)
+	}
+	if *asJSON {
+		return printJSON(stdout, stderr, me)
+	}
+	who := me.Address
+	if me.Name != "" {
+		who = fmt.Sprintf("%s <%s>", me.Name, me.Address)
+	}
+	fmt.Fprintln(stdout, who)
+	reach := "all your ponies"
+	if slugs := me.Token.Reach(); slugs != nil {
+		reach = strings.Join(slugs, ", ")
+	}
+	expires := me.Token.Expires
+	if len(expires) >= 10 {
+		expires = expires[:10]
+	}
+	fmt.Fprintf(stdout, "token %q reaches %s, until %s\n", me.Token.Name, reach, expires)
+	return ExitOK
+}
+
+// statusWords is how list says a pony's status.
+var statusWords = map[string]string{
+	"working":   "working",
+	"needs_you": "needs you",
+	"waiting":   "waiting",
+	"available": "available",
+}
+
+func runList(args []string, b Build, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print the ponies as a JSON array")
+	server := fs.String("server", "", serverHelp)
+	fs.Usage = func() {
+		fmt.Fprint(stderr, "Usage: pony list [--json]\n\nList the ponies your token reaches, and what each is doing.\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	if code, ok := parse(fs, args, 0); !ok {
+		return code
+	}
+	c, code := connect(*server, b, stderr)
+	if c == nil {
+		return code
+	}
+	ponies, err := c.Ponies(context.Background())
+	if err != nil {
+		return failed(err, c, stderr)
+	}
+	if *asJSON {
+		return printJSON(stdout, stderr, ponies)
+	}
+	if len(ponies) == 0 {
+		fmt.Fprintf(stderr, "pony: no ponies here yet. Make one at %s/new\n", c.Server)
+		return ExitOK
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "PONY\tNAME\tSTATUS\tDOING")
+	for _, p := range ponies {
+		status := statusWords[p.Status]
+		if status == "" {
+			status = p.Status
+		}
+		if !p.Ready {
+			status = "getting ready"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.Slug, p.Name, status, p.Doing)
+	}
+	tw.Flush()
+	return ExitOK
+}
