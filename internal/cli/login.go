@@ -62,24 +62,44 @@ var haveBrowser = func() bool {
 	return getenv("DISPLAY") != "" || getenv("WAYLAND_DISPLAY") != ""
 }
 
-// deviceName is what the token is named for: this machine.
-func deviceName() string {
-	h, err := os.Hostname()
+// computerName is the name a Mac goes by (System Settings, General, About).
+// Its host name won't do: with none set, that's whatever the router handed
+// out. Elsewhere there is no such name. Tests replace it.
+var computerName = func() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	out, err := exec.Command("/usr/sbin/scutil", "--get", "ComputerName").Output()
 	if err != nil {
 		return ""
 	}
-	h = strings.TrimSuffix(strings.TrimSuffix(h, ".local"), ".lan")
-	if len(h) > 40 {
-		h = h[:40]
+	return string(out)
+}
+
+// deviceName is what the token is named for: this machine.
+func deviceName() string {
+	host, _ := os.Hostname()
+	return machineName(computerName(), host)
+}
+
+// machineName is the computer's name, else its host name without the local
+// network's suffix, in 40 characters at most.
+func machineName(computer, host string) string {
+	name := strings.TrimSpace(computer)
+	if name == "" {
+		name = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(host), ".local"), ".lan")
 	}
-	return h
+	if r := []rune(name); len(r) > 40 {
+		name = strings.TrimSpace(string(r[:40]))
+	}
+	return name
 }
 
 func runLogin(args []string, b Build, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noBrowser := fs.Bool("no-browser", false, "don't open a browser here: print the address, and read the code it shows")
-	name := fs.String("name", "", "what to call this machine on your Account page (default: its host name)")
+	name := fs.String("name", "", "what to call this machine on your Account page (default: its name)")
 	server := fs.String("server", "", serverHelp)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, `Usage: pony login [--no-browser] [--name NAME]

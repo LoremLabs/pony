@@ -367,6 +367,23 @@ func TestLoginPaste(t *testing.T) {
 	}
 }
 
+func TestMachineName(t *testing.T) {
+	long := strings.Repeat("é", 50)
+	for _, c := range []struct{ computer, host, want string }{
+		{"Ipsum", "Host-003.lan", "Ipsum"}, // the router's name loses to the Mac's own
+		{"Ada\u2019s MacBook Pro\n", "Host-003.lan", "Ada\u2019s MacBook Pro"},
+		{"", "Host-003.lan", "Host-003"},
+		{"", "ada.local", "ada"},
+		{"  ", "buildbox", "buildbox"},
+		{long, "", strings.Repeat("é", 40)}, // whole characters
+		{"", "", ""},
+	} {
+		if got := machineName(c.computer, c.host); got != c.want {
+			t.Errorf("machineName(%q, %q) = %q, want %q", c.computer, c.host, got, c.want)
+		}
+	}
+}
+
 func TestHaveBrowser(t *testing.T) {
 	for _, c := range []struct {
 		env  map[string]string
