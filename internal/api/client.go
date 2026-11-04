@@ -4,7 +4,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +17,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -96,6 +100,7 @@ func (e *Error) Error() string {
 type NetError struct {
 	Err     error
 	Timeout bool
+	Status  int // the HTTP status of an answer that wasn't the API's; 0 for none
 }
 
 func (e *NetError) Error() string { return e.Err.Error() }
@@ -104,45 +109,72 @@ func (e *NetError) Unwrap() error { return e.Err }
 // Get calls GET path (e.g. /api/cli/v1/me) and decodes the answer's body
 // into out.
 func (c *Client) Get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Server+path, nil)
+	return c.do(ctx, http.MethodGet, path, nil, nil, out)
+}
+
+// do sends one request and decodes the API's answer into out. Every answer
+// of the API is {ok: true, …} or {ok: false, error: {code, message}}; an
+// answer of any other shape is a NetError (a proxy's page, a server that is
+// starting, the wrong host).
+func (c *Client) do(ctx context.Context, method, path string, body []byte, header http.Header, out any) error {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.Server+path, rd)
 	if err != nil {
 		return err
+	}
+	for k, v := range header {
+		req.Header[k] = v
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.UserAgent)
 	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		var ne net.Error
 		return &NetError{Err: errors.New(scrub(err.Error(), c.Token)), Timeout: errors.As(err, &ne) && ne.Timeout()}
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
 		return &NetError{Err: fmt.Errorf("reading the answer: %w", err)}
 	}
 
 	var env struct {
-		OK    *bool `json:"ok"`
-		Error *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+		OK    *bool           `json:"ok"`
+		Error json.RawMessage `json:"error"`
+		Code  string          `json:"code"`
 	}
-	if json.Unmarshal(body, &env) != nil || env.OK == nil {
-		// Not the CLI API's shape: a proxy's page, an old server, the
-		// wrong host.
-		return &NetError{Err: fmt.Errorf("%s answered HTTP %d, not the OnePony API (is --server right?)", c.Server, resp.StatusCode)}
+	if json.Unmarshal(data, &env) != nil || env.OK == nil {
+		return &NetError{Err: fmt.Errorf("%s answered HTTP %d, not the OnePony API (is --server right?)", c.Server, resp.StatusCode), Status: resp.StatusCode}
 	}
 	if !*env.OK || resp.StatusCode >= 300 {
-		e := &Error{Status: resp.StatusCode}
-		if env.Error != nil {
-			e.Code, e.Message = env.Error.Code, env.Error.Message
+		e := &Error{Status: resp.StatusCode, Code: env.Code}
+		var obj struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		var text string
+		if json.Unmarshal(env.Error, &obj) == nil {
+			if obj.Code != "" {
+				e.Code = obj.Code
+			}
+			e.Message = obj.Message
+		} else if json.Unmarshal(env.Error, &text) == nil {
+			e.Message = text
 		}
 		return e
 	}
 	if out != nil {
-		if err := json.Unmarshal(body, out); err != nil {
+		if err := json.Unmarshal(data, out); err != nil {
 			return &NetError{Err: fmt.Errorf("an answer pony can't read: %w", err)}
 		}
 	}
@@ -191,7 +223,8 @@ type Pony struct {
 	Address string `json:"address"`
 	Status  string `json:"status"` // working, needs_you, waiting, available
 	Doing   string `json:"doing,omitempty"`
-	Ready   bool   `json:"ready"` // false while it gets ready to start
+	Ready   bool   `json:"ready"`          // false while it gets ready to start
+	Card    string `json:"card,omitempty"` // the card it works on, or waits on you on
 }
 
 // Me asks who the token is.
@@ -215,4 +248,125 @@ func (c *Client) Ponies(ctx context.Context) ([]Pony, error) {
 		r.Ponies = []Pony{}
 	}
 	return r.Ponies, nil
+}
+
+// Pony asks for one pony the token reaches.
+func (c *Client) Pony(ctx context.Context, slug string) (*Pony, error) {
+	var r struct {
+		Pony Pony `json:"pony"`
+	}
+	if err := c.Get(ctx, "/api/cli/v1/ponies/"+url.PathEscape(slug), &r); err != nil {
+		return nil, err
+	}
+	return &r.Pony, nil
+}
+
+// Said is the answer to a line sent to a pony: the card it went on and its
+// place there (the cursor to follow the card from).
+type Said struct {
+	Card string `json:"card"`
+	Seq  int    `json:"seq"`
+	At   string `json:"at,omitempty"`
+}
+
+// NewCard names a fresh chat for a line: OnePony makes the card under this
+// id when the line arrives, so the chat has its address before its first
+// line (the web page does the same).
+func NewCard() string { return "wch_" + randomHex(12) }
+
+// NewKey makes an idempotency key: a line sent again under the same key is
+// the first one, never a second line.
+func NewKey() string { return "pony-" + randomHex(16) }
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err) // crypto/rand never fails on the systems Go supports
+	}
+	return hex.EncodeToString(b)
+}
+
+// Retry is how often a request that got no answer is sent again, and how
+// long to wait before each.
+var Retry = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+
+// Say sends a line to a pony, on card (a chat that exists, or one NewCard
+// named), and returns where it went. A request that got no answer — a
+// network failure, a timeout, a server that answered something else, or
+// one that kept the line but couldn't wake the pony (502, 503, 504) — is
+// sent again under the same key, so the pony gets the line once.
+func (c *Client) Say(ctx context.Context, slug, text, card, key string) (*Said, error) {
+	body, err := json.Marshal(map[string]string{"text": text, "card": card})
+	if err != nil {
+		return nil, err
+	}
+	h := http.Header{"Idempotency-Key": []string{key}}
+	for attempt := 0; ; attempt++ {
+		var s Said
+		err = c.do(ctx, http.MethodPost, "/api/cli/v1/ponies/"+url.PathEscape(slug)+"/chat", body, h, &s)
+		if err == nil && s.Card != "" {
+			return &s, nil
+		}
+		if err == nil {
+			err = &NetError{Err: errors.New("the answer named no card")}
+		}
+		if attempt >= len(Retry) || !retryable(err) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(Retry[attempt]):
+		}
+	}
+}
+
+func retryable(err error) bool {
+	var ne *NetError
+	if errors.As(err, &ne) {
+		return true
+	}
+	var ae *Error
+	return errors.As(err, &ae) && (ae.Status == 502 || ae.Status == 503 || ae.Status == 504)
+}
+
+// Card is a card's state and what was said on it after a cursor.
+type Card struct {
+	Card struct {
+		ID    string `json:"id"`
+		Pony  string `json:"pony"`
+		State string `json:"state"` // working, queued, needs_you, waiting, failed, idle
+	} `json:"card"`
+	Lines []Line `json:"lines"`
+	Next  int    `json:"next"`
+}
+
+// Line is one thing said on a card.
+type Line struct {
+	Seq  int    `json:"seq"`
+	From string `json:"from"` // you | pony
+	Text string `json:"text"`
+	At   string `json:"at,omitempty"`
+	Via  string `json:"via,omitempty"` // web | mail | comment
+}
+
+// Busy reports whether the pony is still at it: a run on the card, or a
+// wake for it waiting its turn.
+func Busy(state string) bool { return state == "working" || state == "queued" }
+
+// ReadCard reads a card, and the lines after the cursor after (0: from
+// the start).
+func (c *Client) ReadCard(ctx context.Context, card string, after int) (*Card, error) {
+	path := "/api/cli/v1/cards/" + url.PathEscape(card)
+	if after > 0 {
+		path += "?after=" + strconv.Itoa(after)
+	}
+	var r Card
+	if err := c.Get(ctx, path, &r); err != nil {
+		return nil, err
+	}
+	if r.Next < after {
+		r.Next = after
+	}
+	return &r, nil
 }

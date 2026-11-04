@@ -75,19 +75,30 @@ func failed(err error, c *api.Client, stderr io.Writer) int {
 	}
 }
 
-// parse handles a command's flags; ok false means return code now.
-func parse(fs *flag.FlagSet, args []string, maxArgs int) (code int, ok bool) {
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return ExitOK, false
+// parse handles a command's flags, wherever they are among its arguments
+// (`pony list --json` and `pony ask pepper hi --json` alike; "--" ends
+// them), and returns the rest. ok false means return code now.
+func parse(fs *flag.FlagSet, args []string, maxArgs int) (pos []string, code int, ok bool) {
+	for {
+		if err := fs.Parse(args); err != nil {
+			if err == flag.ErrHelp {
+				return nil, ExitOK, false
+			}
+			return nil, ExitUsage, false
 		}
-		return ExitUsage, false
+		rest := fs.Args()
+		if n := len(args) - len(rest); len(rest) == 0 || (n > 0 && args[n-1] == "--") {
+			pos = append(pos, rest...)
+			break
+		}
+		pos = append(pos, rest[0])
+		args = rest[1:]
 	}
-	if fs.NArg() > maxArgs {
+	if maxArgs >= 0 && len(pos) > maxArgs {
 		fs.Usage()
-		return ExitUsage, false
+		return nil, ExitUsage, false
 	}
-	return ExitOK, true
+	return pos, ExitOK, true
 }
 
 func printJSON(stdout, stderr io.Writer, v any) int {
@@ -111,7 +122,7 @@ func runWhoami(args []string, b Build, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, "Usage: pony whoami [--json]\n\nShow the account your token signs in as, and what the token reaches.\nThe token is read from ONEPONY_TOKEN.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
-	if code, ok := parse(fs, args, 0); !ok {
+	if _, code, ok := parse(fs, args, 0); !ok {
 		return code
 	}
 	c, code := connect(*server, b, stderr)
@@ -159,7 +170,7 @@ func runList(args []string, b Build, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, "Usage: pony list [--json]\n\nList the ponies your token reaches, and what each is doing.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
-	if code, ok := parse(fs, args, 0); !ok {
+	if _, code, ok := parse(fs, args, 0); !ok {
 		return code
 	}
 	c, code := connect(*server, b, stderr)

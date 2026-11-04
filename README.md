@@ -53,19 +53,34 @@ once. A browser sign-in (`pony login`) is on the way.
 ## Use
 
 ```sh
-pony whoami            # the account your token signs in as, and what it reaches
-pony list              # your ponies, and what each is doing
-pony list --json       # the same, for scripts
+pony whoami                      # the account your token signs in as, and what it reaches
+pony list                        # your ponies, and what each is doing
+pony status pepper               # one pony: what it's doing, and the card it's on
+pony ask pepper "What's on my calendar tomorrow?"
+pony ask pepper - < notes.txt    # the words from stdin
+pony watch wch_3f9a…             # follow a card until the pony is done with it
 pony version
 pony help [command]
 ```
 
-`--server URL` (or `ONEPONY_SERVER`) talks to another OnePony server; plain
-`http://` is allowed only for `localhost`. Output for people goes to stdout,
-anything else to stderr, and `--json` prints one JSON value. A token is never
-printed.
+`pony ask` sends a line to a pony and waits for its answer, printing what the
+pony says as it comes. Each ask starts a chat of its own, a card on the
+pony's board; `--card` carries on one. A line is 4000 characters at most. If
+the pony needs you first (a mail to approve, a question), `ask` says so,
+links the card on your board and exits 5. `--timeout` (10 minutes by
+default) or Ctrl-C stops the waiting, not the pony, and `pony watch <card>`
+picks it up from there. A line sent again after a network failure reaches
+the pony once.
 
-Talking to a pony is on the way: `pony ask`, `pony status` and `pony watch`.
+`pony watch` prints what was said on a card, then each new line, until the
+pony is done with it: exit 0 when it is, 5 when it waits on you, 7 when its
+run failed. `--json` prints NDJSON, one object per line said and per change
+of state.
+
+Flags go anywhere on the line (`--` ends them). `--server URL` (or
+`ONEPONY_SERVER`) talks to another OnePony server; plain `http://` is allowed
+only for `localhost`. Output for people goes to stdout, anything else to
+stderr, and `--json` prints JSON. A token is never printed.
 
 ### Exit codes
 

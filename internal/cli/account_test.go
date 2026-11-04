@@ -155,12 +155,12 @@ func TestFailures(t *testing.T) {
 
 func TestHelpListsWorkingCommands(t *testing.T) {
 	_, out, _ := run("help")
-	for _, c := range []string{"whoami", "list", "version", "ONEPONY_TOKEN"} {
+	for _, c := range []string{"whoami", "list", "ask", "watch", "status", "version", "ONEPONY_TOKEN"} {
 		if !strings.Contains(out, c) {
 			t.Fatalf("help lacks %q:\n%s", c, out)
 		}
 	}
-	for _, c := range []string{"login", "ask", "watch"} {
+	for _, c := range []string{"login", "logout"} {
 		if strings.Contains(out, "  "+c+" ") {
 			t.Fatalf("help lists %q, which doesn't work yet", c)
 		}

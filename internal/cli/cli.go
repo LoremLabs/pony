@@ -47,6 +47,9 @@ func init() {
 	commands = []command{
 		{"whoami", "Show the account your token signs in as", runWhoami},
 		{"list", "List your ponies and what each is doing", runList},
+		{"ask", "Say something to a pony and wait for its answer", runAsk},
+		{"watch", "Follow a card until its pony is done with it", runWatch},
+		{"status", "Show what one pony is doing", runStatus},
 		{"version", "Print the version of pony", runVersion},
 		{"help", "Show help for pony or one of its commands", runHelp},
 	}
