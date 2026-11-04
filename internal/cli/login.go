@@ -40,9 +40,27 @@ var openBrowser = func(u string) error {
 // loginWait is how long a sign-in may take in the browser.
 var loginWait = 10 * time.Minute
 
-const callbackPage = `<!doctype html><meta charset="utf-8"><title>pony</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;margin:4rem auto;max-width:32rem;padding:0 1rem}</style>
-<p>%s</p>`
+// answerWait is how long the browser's redirect waits for the exchange,
+// to say how it went.
+var answerWait = 30 * time.Second
+
+// haveBrowser says whether a browser opened here can reach this terminal's
+// listener: not over ssh (it would open on the far machine, or nowhere),
+// and on Linux and the BSDs only with a display. $BROWSER set says yes.
+// Tests replace it.
+var haveBrowser = func() bool {
+	if strings.TrimSpace(getenv("BROWSER")) != "" {
+		return true
+	}
+	if getenv("SSH_CONNECTION") != "" || getenv("SSH_TTY") != "" {
+		return false
+	}
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return true
+	}
+	return getenv("DISPLAY") != "" || getenv("WAYLAND_DISPLAY") != ""
+}
 
 // deviceName is what the token is named for: this machine.
 func deviceName() string {
@@ -66,13 +84,12 @@ func runLogin(args []string, b Build, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprint(stderr, `Usage: pony login [--no-browser] [--name NAME]
 
-Sign in to OnePony in your browser. The page asks you to let this terminal
-use OnePony as you; once you allow it, pony saves a token (every pony, 90
-days) in its credentials file, readable by you alone. It's listed on your
-Account page, where you can revoke it; 'pony logout' revokes it too.
+Sign in to OnePony in your browser, and save a token for this machine. It
+reaches every pony for 90 days. Revoke it on your Account page, or with
+'pony logout'.
 
-On a machine without a browser (over ssh), --no-browser prints the address
-to open anywhere, and reads the code that page shows.
+Without a browser here (--no-browser, or over ssh), open the address it
+prints in any browser and paste the code that page shows.
 
 Flags:
 `)
@@ -112,66 +129,96 @@ Flags:
 	if device == "" {
 		device = deviceName()
 	}
+	// The authorize page, sending the browser back to redirect (none: the
+	// page shows a code to paste).
+	authorize := func(redirect string) string {
+		q := url.Values{"challenge": {pk.Challenge}, "method": {"S256"}, "state": {state}}
+		if redirect != "" {
+			q.Set("redirect_uri", redirect)
+		}
+		if device != "" {
+			q.Set("name", device)
+		}
+		return c.Server + "/cli/authorize?" + q.Encode()
+	}
 
+	// The browser on this machine comes back to a listener here, on a port
+	// of its own; anywhere, a code pasted from the page does the same.
 	var (
 		redirect string
 		codes    chan callback
-		srv      *http.Server
 	)
-	if !*noBrowser {
+	if !*noBrowser && haveBrowser() {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			fmt.Fprintf(stderr, "pony: can't listen for the browser here (%v); try pony login --no-browser\n", err)
-			return ExitError
+		if err == nil {
+			redirect = fmt.Sprintf("http://127.0.0.1:%d/callback", ln.Addr().(*net.TCPAddr).Port)
+			codes = make(chan callback, 1)
+			srv := &http.Server{Handler: callbackHandler(state, c.Server+"/cli/done", codes), ReadHeaderTimeout: 10 * time.Second}
+			go srv.Serve(ln)
+			// Shutdown, not Close: the browser's redirect is written first.
+			defer func() {
+				sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				srv.Shutdown(sctx)
+			}()
 		}
-		redirect = fmt.Sprintf("http://127.0.0.1:%d/callback", ln.Addr().(*net.TCPAddr).Port)
-		codes = make(chan callback, 1)
-		srv = &http.Server{Handler: callbackHandler(state, codes), ReadHeaderTimeout: 10 * time.Second}
-		go srv.Serve(ln)
-		defer srv.Close()
 	}
-
-	q := url.Values{"challenge": {pk.Challenge}, "method": {"S256"}, "state": {state}}
 	if redirect != "" {
-		q.Set("redirect_uri", redirect)
-	}
-	if device != "" {
-		q.Set("name", device)
-	}
-	page := c.Server + "/cli/authorize?" + q.Encode()
-
-	var code string
-	if *noBrowser {
-		fmt.Fprintf(stderr, "Open this address in a browser, sign in, and allow pony:\n\n  %s\n\n", page)
-		fmt.Fprint(stderr, "Then paste the code it shows: ")
-		line, err := readCode(ctx)
-		if err != nil {
-			return gaveUp(ctx, stderr, "", "signing in")
+		fmt.Fprintln(stderr, "Opening your browser to sign in…")
+		if err := openBrowser(authorize(redirect)); err != nil {
+			fmt.Fprintf(stderr, "pony: couldn't open a browser (%v)\n", err)
 		}
-		code = line
+		fmt.Fprintf(stderr, "If it didn't open, go to this address and paste the code it shows:\n\n  %s\n\n", authorize(""))
 	} else {
-		fmt.Fprintf(stderr, "Opening your browser to sign in. If it doesn't open, go to:\n\n  %s\n\n", page)
-		if err := openBrowser(page); err != nil {
-			fmt.Fprintf(stderr, "pony: couldn't open a browser (%v); open the address above\n", err)
-		}
-		fmt.Fprintln(stderr, "Waiting for you to allow it…")
+		fmt.Fprintf(stderr, "Go to this address in a browser and paste the code it shows:\n\n  %s\n\n", authorize(""))
+	}
+	fmt.Fprint(stderr, "Code: ")
+	pasted := readCodes(stdin)
+
+	// What came back: the code, the redirect it was granted for ("" for a
+	// pasted one), and, from the browser, where to tell it how it went.
+	var (
+		code, via string
+		answer    = func(string) {}
+	)
+	for code == "" {
 		select {
 		case <-ctx.Done():
-			return gaveUp(ctx, stderr, "", "waiting for the browser")
+			fmt.Fprintln(stderr)
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				fmt.Fprintln(stderr, "pony: timed out; nothing was signed in")
+				return ExitTimeout
+			}
+			fmt.Fprintln(stderr, "pony: stopped; nothing was signed in")
+			return 130
 		case cb := <-codes:
+			fmt.Fprintln(stderr)
 			if cb.err != "" {
-				fmt.Fprintln(stderr, "pony: nothing was signed in (you cancelled it in the browser)")
+				fmt.Fprintln(stderr, "pony: cancelled in the browser; nothing was signed in")
 				return ExitAuth
 			}
-			code = cb.code
+			code, via = cb.code, redirect
+			var once sync.Once
+			answer = func(result string) { once.Do(func() { cb.answer <- result }) }
+			defer answer("failed")
+		case line, ok := <-pasted:
+			if !ok {
+				pasted = nil
+				if codes == nil {
+					fmt.Fprintln(stderr, "\npony: no code; nothing was signed in")
+					return ExitAuth
+				}
+				continue
+			}
+			if !strings.HasPrefix(line, "pcode_") {
+				fmt.Fprint(stderr, "That isn't the code the page shows (it starts with pcode_). Code: ")
+				continue
+			}
+			code, via = line, ""
 		}
 	}
-	if !strings.HasPrefix(code, "pcode_") {
-		fmt.Fprintln(stderr, "pony: that isn't the code the page shows (it starts with pcode_)")
-		return ExitUsage
-	}
 
-	g, err := c.Exchange(ctx, code, pk.Verifier, redirect)
+	g, err := c.Exchange(ctx, code, pk.Verifier, via)
 	if err != nil {
 		var ae *api.Error
 		if errors.As(err, &ae) && (ae.Code == "login_gone" || ae.Code == "login_bad") {
@@ -191,6 +238,7 @@ Flags:
 		fmt.Fprintf(stderr, "pony: signed in, but the token couldn't be saved (%v); revoke %q on your Account page\n", err, g.Token.Name)
 		return ExitError
 	}
+	answer("ok")
 	// The token this one replaces would otherwise live on, unused, until it
 	// expired: it revokes itself (best effort: one already revoked or
 	// expired answers 401, and that's the same).
@@ -217,13 +265,20 @@ Flags:
 	return ExitOK
 }
 
-type callback struct{ code, err string }
+// callback is the browser's redirect: a code, or a refusal; and where to
+// say how the sign-in went (ok or failed), to send the browser on.
+type callback struct {
+	code, err string
+	answer    chan<- string
+}
 
-// callbackHandler takes the browser's one redirect: the code (or a refusal)
-// with the state this sign-in sent, and nothing else.
-func callbackHandler(state string, out chan<- callback) http.Handler {
+// callbackHandler takes the browser's one redirect, with the state this
+// sign-in sent, and sends the browser on to the site's done page
+// (done?result=ok, cancelled or failed): once the terminal says how the
+// exchange went, or answerWait.
+func callbackHandler(state, done string, out chan<- callback) http.Handler {
 	var mu sync.Mutex
-	done := false
+	taken := false
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/callback" || r.Method != http.MethodGet {
 			http.NotFound(w, r)
@@ -234,41 +289,47 @@ func callbackHandler(state string, out chan<- callback) http.Handler {
 			http.Error(w, "That isn't this sign-in. Run pony login again.", http.StatusBadRequest)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		mu.Lock()
-		defer mu.Unlock()
-		if done {
-			fmt.Fprintf(w, callbackPage, "This sign-in is done. You can close this tab.")
+		first := !taken
+		taken = true
+		mu.Unlock()
+		if !first {
+			http.Redirect(w, r, done, http.StatusFound)
 			return
 		}
-		done = true
-		if e := q.Get("error"); e != "" {
-			fmt.Fprintf(w, callbackPage, "Nothing was signed in. You can close this tab.")
-			out <- callback{err: e}
+		if q.Get("error") != "" {
+			out <- callback{err: q.Get("error")}
+			http.Redirect(w, r, done+"?result=cancelled", http.StatusFound)
 			return
 		}
-		fmt.Fprintf(w, callbackPage, "Signed in. You can close this tab and go back to your terminal.")
-		out <- callback{code: q.Get("code")}
+		answer := make(chan string, 1)
+		out <- callback{code: q.Get("code"), answer: answer}
+		result := "failed"
+		select {
+		case result = <-answer:
+		case <-time.After(answerWait):
+		case <-r.Context().Done():
+			return
+		}
+		http.Redirect(w, r, done+"?result="+result, http.StatusFound)
 	})
 }
 
-// readCode reads one line from stdin, or gives up with ctx.
-func readCode(ctx context.Context) (string, error) {
-	line := make(chan string, 1)
+// readCodes reads lines from r (a code the page shows, pasted), trimmed,
+// the empty ones skipped; the channel closes at the end of r.
+func readCodes(r io.Reader) <-chan string {
+	out := make(chan string)
 	go func() {
-		s, _ := bufio.NewReader(stdin).ReadString('\n')
-		line <- strings.TrimSpace(s)
-	}()
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case s := <-line:
-		if s == "" {
-			return "", errors.New("no code")
+		defer close(out)
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			if s := strings.TrimSpace(sc.Text()); s != "" {
+				out <- s
+			}
 		}
-		return s, nil
-	}
+	}()
+	return out
 }
 
 func runLogout(args []string, b Build, stdout, stderr io.Writer) int {

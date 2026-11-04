@@ -29,11 +29,12 @@ type loginServer struct {
 	grants  map[string][2]string // code → {challenge, redirect}
 	revoked bool
 	logouts int
-	bearers []string // who called /logout
+	bearers []string    // who called /logout
+	landed  chan string // where the listener sent the browser on to
 }
 
 func newLoginServer(t *testing.T) *loginServer {
-	ls := &loginServer{t: t, grants: map[string][2]string{}}
+	ls := &loginServer{t: t, grants: map[string][2]string{}, landed: make(chan string, 4)}
 	answer := func(w http.ResponseWriter, status int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -97,9 +98,48 @@ func (ls *loginServer) grant(challenge, redirect string) string {
 	return code
 }
 
+// aBrowser says there is a browser here, whatever the machine running the
+// tests has, and leaves stdin with nothing to read.
+func aBrowser(t *testing.T) {
+	old, oldIn := haveBrowser, stdin
+	r, _ := io.Pipe()
+	haveBrowser, stdin = func() bool { return true }, r
+	t.Cleanup(func() {
+		haveBrowser, stdin = old, oldIn
+		r.Close()
+	})
+}
+
+// follow is the browser arriving at the terminal's listener; where it's
+// sent on goes to landed.
+func (ls *loginServer) follow(back string) {
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Get(back)
+	if err != nil {
+		ls.landed <- "error: " + err.Error()
+		return
+	}
+	resp.Body.Close()
+	ls.landed <- resp.Header.Get("Location")
+}
+
+// wantLanded waits for the browser to be sent to the done page with result.
+func (ls *loginServer) wantLanded(t *testing.T, result string) {
+	t.Helper()
+	select {
+	case got := <-ls.landed:
+		if want := ls.srv.URL + "/cli/done?result=" + result; got != want {
+			t.Fatalf("the browser was sent to %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the browser was left waiting")
+	}
+}
+
 // browser stands in for the person's browser on the authorize page: allow
 // grants and follows the redirect with the code; anything else cancels.
 func (ls *loginServer) browser(t *testing.T, allow bool, seen *url.Values) {
+	aBrowser(t)
 	old := openBrowser
 	openBrowser = func(page string) error {
 		u, err := url.Parse(page)
@@ -117,12 +157,7 @@ func (ls *loginServer) browser(t *testing.T, allow bool, seen *url.Values) {
 			v.Set("error", "access_denied")
 		}
 		back.RawQuery = v.Encode()
-		go func() {
-			resp, err := http.Get(back.String())
-			if err == nil {
-				resp.Body.Close()
-			}
-		}()
+		go ls.follow(back.String())
 		return nil
 	}
 	t.Cleanup(func() { openBrowser = old })
@@ -144,6 +179,7 @@ func TestLogin(t *testing.T) {
 		t.Fatalf("the authorize page was asked %v", seen)
 	}
 	noToken(t, out, errOut)
+	ls.wantLanded(t, "ok")
 
 	path := filepath.Join(cfg, "pony", "credentials.json")
 	fi, err := os.Stat(path)
@@ -206,6 +242,7 @@ func TestLoginCancelled(t *testing.T) {
 	if code, _, errOut := run("login"); code != ExitAuth || !strings.Contains(errOut, "cancelled") {
 		t.Fatalf("exit %d, %q", code, errOut)
 	}
+	ls.wantLanded(t, "cancelled")
 	if _, err := os.Stat(filepath.Join(cfg, "pony", "credentials.json")); !os.IsNotExist(err) {
 		t.Fatalf("a cancelled sign-in saved something: %v", err)
 	}
@@ -214,11 +251,12 @@ func TestLoginCancelled(t *testing.T) {
 func TestLoginTimesOut(t *testing.T) {
 	ls := newLoginServer(t)
 	withEnv(t, map[string]string{"ONEPONY_SERVER": ls.srv.URL})
+	aBrowser(t)
 	old, oldWait := openBrowser, loginWait
 	openBrowser = func(string) error { return nil } // the person never comes back
 	loginWait = 50 * time.Millisecond
 	t.Cleanup(func() { openBrowser, loginWait = old, oldWait })
-	if code, _, errOut := run("login"); code != ExitTimeout || !strings.Contains(errOut, "timed out") {
+	if code, _, errOut := run("login"); code != ExitTimeout || !strings.Contains(errOut, "timed out; nothing was signed in") {
 		t.Fatalf("exit %d, %q", code, errOut)
 	}
 }
@@ -270,9 +308,87 @@ func TestLoginNoBrowser(t *testing.T) {
 	}
 }
 
+// The browser opened somewhere that can't reach the listener: the address
+// printed shows a code, and pasting it signs in just the same.
+func TestLoginPastedWhileWaiting(t *testing.T) {
+	ls := newLoginServer(t)
+	withEnv(t, map[string]string{"ONEPONY_SERVER": ls.srv.URL})
+	aBrowser(t)
+	old := openBrowser
+	var opened string
+	openBrowser = func(page string) error { opened = page; return nil }
+	t.Cleanup(func() { openBrowser = old })
+	r, w := io.Pipe()
+	stdin = r
+
+	var o bytes.Buffer
+	e := &codeWriter{ls: ls, in: w}
+	if code := Run([]string{"login"}, testBuild, &o, e); code != ExitOK || o.String() != "Signed in as Ada <ada@example.com>.\n" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, o.String(), e.buf.String())
+	}
+	if !strings.Contains(opened, "redirect_uri=") {
+		t.Fatalf("the browser here was opened without the listener: %q", opened)
+	}
+}
+
+// No browser here (ssh): no listener, nothing opened, only the code.
+func TestLoginNoBrowserHere(t *testing.T) {
+	ls := newLoginServer(t)
+	withEnv(t, map[string]string{"ONEPONY_SERVER": ls.srv.URL})
+	oldHave, oldOpen, oldIn := haveBrowser, openBrowser, stdin
+	haveBrowser = func() bool { return false }
+	openBrowser = func(string) error { t.Error("opened a browser over ssh"); return nil }
+	t.Cleanup(func() { haveBrowser, openBrowser, stdin = oldHave, oldOpen, oldIn })
+	r, w := io.Pipe()
+	stdin = r
+
+	var o bytes.Buffer
+	e := &codeWriter{ls: ls, in: w}
+	if code := Run([]string{"login"}, testBuild, &o, e); code != ExitOK {
+		t.Fatalf("exit %d, stderr %q", code, e.buf.String())
+	}
+}
+
+func TestLoginPaste(t *testing.T) {
+	ls := newLoginServer(t)
+	withEnv(t, map[string]string{"ONEPONY_SERVER": ls.srv.URL})
+	old := stdin
+	t.Cleanup(func() { stdin = old })
+
+	// Nothing to read: nothing was signed in.
+	stdin = strings.NewReader("")
+	if code, _, errOut := run("login", "--no-browser"); code != ExitAuth || !strings.Contains(errOut, "no code; nothing was signed in") {
+		t.Fatalf("no code: exit %d, %q", code, errOut)
+	}
+	// Something else pasted: it asks again, and then the end of input.
+	stdin = strings.NewReader("hello\n")
+	if code, _, errOut := run("login", "--no-browser"); code != ExitAuth || !strings.Contains(errOut, "it starts with pcode_") {
+		t.Fatalf("not a code: exit %d, %q", code, errOut)
+	}
+}
+
+func TestHaveBrowser(t *testing.T) {
+	for _, c := range []struct {
+		env  map[string]string
+		want bool
+	}{
+		{map[string]string{"BROWSER": "firefox", "SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}, true},
+		{map[string]string{"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22", "DISPLAY": ":0"}, false},
+		{map[string]string{"SSH_TTY": "/dev/ttys001", "DISPLAY": ":0"}, false},
+		{map[string]string{"DISPLAY": ":0"}, true},
+		{map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
+	} {
+		withEnv(t, c.env)
+		if got := haveBrowser(); got != c.want {
+			t.Errorf("%v: %v", c.env, got)
+		}
+	}
+}
+
 func TestLoginRefusals(t *testing.T) {
 	ls := newLoginServer(t)
 	withEnv(t, map[string]string{"ONEPONY_SERVER": ls.srv.URL})
+	aBrowser(t)
 	old := openBrowser
 	t.Cleanup(func() { openBrowser = old })
 
@@ -283,12 +399,13 @@ func TestLoginRefusals(t *testing.T) {
 		q := u.Query()
 		back, _ := url.Parse(q.Get("redirect_uri"))
 		back.RawQuery = url.Values{"state": {q.Get("state")}, "code": {ls.grant(strings.Repeat("A", 43), q.Get("redirect_uri"))}}.Encode()
-		go http.Get(back.String())
+		go ls.follow(back.String())
 		return nil
 	}
 	if code, _, errOut := run("login"); code != ExitAuth || !strings.Contains(errOut, "login bad") {
 		t.Fatalf("another's code: exit %d, %q", code, errOut)
 	}
+	ls.wantLanded(t, "failed")
 
 	// A redirect that doesn't bring this sign-in's state back is turned away,
 	// and the right one still gets through.
@@ -306,13 +423,14 @@ func TestLoginRefusals(t *testing.T) {
 				resp.Body.Close()
 			}
 			back.RawQuery = url.Values{"state": {q.Get("state")}, "code": {ls.grant(q.Get("challenge"), q.Get("redirect_uri"))}}.Encode()
-			http.Get(back.String())
+			ls.follow(back.String())
 		}()
 		return nil
 	}
 	if code, _, errOut := run("login"); code != ExitOK {
 		t.Fatalf("after a wrong state: exit %d, %q", code, errOut)
 	}
+	ls.wantLanded(t, "ok")
 }
 
 func TestTokenSources(t *testing.T) {

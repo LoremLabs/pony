@@ -45,9 +45,11 @@ Your browser opens on OnePony. Sign in there if you aren't already, and
 allow pony. It gets a token for all your ponies that lasts 90 days, saved in
 `~/.config/pony/credentials.json`, which only you can read. The token is
 listed on your Account page, where you can revoke it; `pony logout` revokes
-it and forgets it here. On a machine without a browser (over ssh),
-`pony login --no-browser` prints the address to open anywhere, and you paste
-back the code that page shows.
+it and forgets it here.
+
+Over ssh, or if the browser doesn't open, go to the address `pony login`
+prints, in any browser, and paste the code that page shows. `--no-browser`
+goes straight to that.
 
 Scripts and CI use a token instead: make one on your Account page, under
 Command line (https://www.onepony.com/settings/account). Name it, choose
