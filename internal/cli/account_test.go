@@ -39,8 +39,13 @@ func fakeServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// withEnv gives a test its environment, with a config dir of its own: no
+// test reads or writes the credentials of whoever runs it.
 func withEnv(t *testing.T, env map[string]string) {
 	t.Helper()
+	if _, ok := env["XDG_CONFIG_HOME"]; !ok {
+		env["XDG_CONFIG_HOME"] = t.TempDir()
+	}
 	old := getenv
 	getenv = func(k string) string { return env[k] }
 	t.Cleanup(func() { getenv = old })
@@ -104,7 +109,7 @@ func TestSignedOut(t *testing.T) {
 		token string
 		want  string
 	}{
-		{"no token", "", "not signed in. Make a token"},
+		{"no token", "", "not signed in. Run 'pony login'"},
 		{"not a token", "hunter2", "isn't a pony token"},
 		{"revoked", "pony_ffffffffffffffffffffffffffffffffffffffff", "revoked, has expired"},
 	} {
@@ -155,14 +160,10 @@ func TestFailures(t *testing.T) {
 
 func TestHelpListsWorkingCommands(t *testing.T) {
 	_, out, _ := run("help")
-	for _, c := range []string{"whoami", "list", "ask", "watch", "status", "version", "ONEPONY_TOKEN"} {
+	for _, c := range []string{"login", "logout", "whoami", "list", "ask", "watch", "status", "version", "ONEPONY_TOKEN"} {
 		if !strings.Contains(out, c) {
 			t.Fatalf("help lacks %q:\n%s", c, out)
 		}
 	}
-	for _, c := range []string{"login", "logout"} {
-		if strings.Contains(out, "  "+c+" ") {
-			t.Fatalf("help lists %q, which doesn't work yet", c)
-		}
-	}
+
 }

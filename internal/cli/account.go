@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/loremlabs/pony/internal/api"
+	"github.com/loremlabs/pony/internal/auth"
 )
 
 // getenv is os.Getenv; tests replace it.
@@ -20,14 +21,14 @@ var getenv = os.Getenv
 const accountPage = "/settings/account"
 
 // connect builds the API client from --server (else ONEPONY_SERVER, else
-// the default) and ONEPONY_TOKEN. A server other than the default is named
-// on stderr, so a script's output says where it talked.
+// the default) and a token: ONEPONY_TOKEN when it is set (scripts, CI),
+// else the one `pony login` saved for that server. A server other than the
+// default is named on stderr, so a script's output says where it talked.
 func connect(server string, b Build, stderr io.Writer) (*api.Client, int) {
 	if server == "" {
 		server = getenv("ONEPONY_SERVER")
 	}
-	token := strings.TrimSpace(getenv("ONEPONY_TOKEN"))
-	c, err := api.New(server, token, b.Version)
+	c, err := api.New(server, "", b.Version)
 	if err != nil {
 		fmt.Fprintf(stderr, "pony: %v\n", err)
 		return nil, ExitUsage
@@ -35,15 +36,28 @@ func connect(server string, b Build, stderr io.Writer) (*api.Client, int) {
 	if c.Server != api.DefaultServer {
 		fmt.Fprintf(stderr, "pony: using %s\n", c.Server)
 	}
-	if token == "" {
-		fmt.Fprintf(stderr, "pony: not signed in. Make a token on your Account page (%s%s) and set ONEPONY_TOKEN to it.\n", c.Server, accountPage)
-		return nil, ExitAuth
+	token := strings.TrimSpace(getenv("ONEPONY_TOKEN"))
+	if token != "" {
+		if !api.ValidToken(token) {
+			fmt.Fprintf(stderr, "pony: ONEPONY_TOKEN isn't a pony token (they start with pony_). Copy it again from %s%s.\n", c.Server, accountPage)
+			return nil, ExitAuth
+		}
+		c.Token = token
+		return c, ExitOK
 	}
-	if !api.ValidToken(token) {
-		fmt.Fprintf(stderr, "pony: ONEPONY_TOKEN isn't a pony token (they start with pony_). Copy it again from %s%s.\n", c.Server, accountPage)
-		return nil, ExitAuth
+	if st, err := auth.DefaultStore(getenv); err == nil {
+		saved, ok, err := st.Get(c.Server)
+		if err != nil {
+			fmt.Fprintf(stderr, "pony: %v\n", err)
+			return nil, ExitError
+		}
+		if ok && api.ValidToken(saved.Token) {
+			c.Token = saved.Token
+			return c, ExitOK
+		}
 	}
-	return c, ExitOK
+	fmt.Fprintf(stderr, "pony: not signed in. Run 'pony login', or set ONEPONY_TOKEN to a token from your Account page (%s%s).\n", c.Server, accountPage)
+	return nil, ExitAuth
 }
 
 // failed reports an API error on stderr and returns its exit code.
@@ -54,7 +68,7 @@ func failed(err error, c *api.Client, stderr io.Writer) int {
 	case errors.As(err, &ae):
 		switch {
 		case ae.Status == 401:
-			fmt.Fprintf(stderr, "pony: not signed in: the token was revoked, has expired, or isn't one. Make another on %s%s.\n", c.Server, accountPage)
+			fmt.Fprintf(stderr, "pony: not signed in: the token was revoked, has expired, or isn't one. Run 'pony login' again, or make another on %s%s.\n", c.Server, accountPage)
 			return ExitAuth
 		case ae.Status == 403:
 			fmt.Fprintf(stderr, "pony: not allowed: %s\n", ae)

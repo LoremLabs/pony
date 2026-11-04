@@ -37,23 +37,36 @@ notice the first time.
 
 ## Sign in
 
-Make a token on your OnePony Account page, under Command line
-(https://www.onepony.com/settings/account): give it a name, choose which
-ponies it reaches and how long it lasts. It's shown once. Then:
+```sh
+pony login
+```
+
+Your browser opens on OnePony. Sign in there if you aren't already, and
+allow pony. It gets a token for all your ponies that lasts 90 days, saved in
+`~/.config/pony/credentials.json`, which only you can read. The token is
+listed on your Account page, where you can revoke it; `pony logout` revokes
+it and forgets it here. On a machine without a browser (over ssh),
+`pony login --no-browser` prints the address to open anywhere, and you paste
+back the code that page shows.
+
+Scripts and CI use a token instead: make one on your Account page, under
+Command line (https://www.onepony.com/settings/account). Name it, choose
+which ponies it reaches and how long it lasts. It's shown once.
 
 ```sh
 export ONEPONY_TOKEN=pony_…
 pony whoami
 ```
 
-A token is as good as your account for the ponies it reaches, so keep it as
-you would a password. Revoke it on the same page and it stops working at
-once. A browser sign-in (`pony login`) is on the way.
+`ONEPONY_TOKEN`, when it is set, comes before the token `pony login` saved. A
+token is as good as your account for the ponies it reaches, so keep it as
+you would a password.
 
 ## Use
 
 ```sh
-pony whoami                      # the account your token signs in as, and what it reaches
+pony login                       # sign in, in your browser
+pony whoami                      # the account you're signed in as, and what the token reaches
 pony list                        # your ponies, and what each is doing
 pony status pepper               # one pony: what it's doing, and the card it's on
 pony ask pepper "What's on my calendar tomorrow?"

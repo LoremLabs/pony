@@ -45,6 +45,8 @@ var commands []command
 
 func init() {
 	commands = []command{
+		{"login", "Sign in, in your browser", runLogin},
+		{"logout", "Sign out: revoke and forget the token login saved", runLogout},
 		{"whoami", "Show the account your token signs in as", runWhoami},
 		{"list", "List your ponies and what each is doing", runList},
 		{"ask", "Say something to a pony and wait for its answer", runAsk},
@@ -96,8 +98,8 @@ Commands:
 		fmt.Fprintf(w, "  %-10s %s\n", c.name, c.summary)
 	}
 	fmt.Fprint(w, `
-Sign in by setting ONEPONY_TOKEN to a token from your Account page
-(https://www.onepony.com/settings/account).
+Sign in with 'pony login'. Scripts can set ONEPONY_TOKEN to a token from
+your Account page (https://www.onepony.com/settings/account) instead.
 
 Run 'pony help <command>' for more about a command.
 `)

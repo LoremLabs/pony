@@ -130,7 +130,9 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, heade
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.UserAgent)
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -369,4 +371,42 @@ func (c *Client) ReadCard(ctx context.Context, card string, after int) (*Card, e
 		r.Next = after
 	}
 	return &r, nil
+}
+
+// Granted is what a sign-in's exchange answers: the token, and what it is.
+type Granted struct {
+	Secret string    `json:"secret"`
+	Token  TokenInfo `json:"token"`
+}
+
+// Exchange swaps the one-time code the authorize page gave the browser,
+// and the PKCE verifier only this terminal holds, for a token (POST
+// /api/cli/token). redirect is the one the sign-in named ("" when the code
+// was typed). A code is good for one try.
+func (c *Client) Exchange(ctx context.Context, code, verifier, redirect string) (*Granted, error) {
+	body, err := json.Marshal(map[string]string{"code": code, "verifier": verifier, "redirect": redirect})
+	if err != nil {
+		return nil, err
+	}
+	var g Granted
+	if err := c.do(ctx, http.MethodPost, "/api/cli/token", body, nil, &g); err != nil {
+		return nil, err
+	}
+	if !ValidToken(g.Secret) {
+		return nil, &NetError{Err: errors.New("the sign-in answered no token")}
+	}
+	return &g, nil
+}
+
+// Logout revokes the token the client signs in with (POST
+// /api/cli/v1/logout): it stops working at once, as Revoke on the Account
+// page does. It returns the revoked token's id.
+func (c *Client) Logout(ctx context.Context) (string, error) {
+	var r struct {
+		Revoked string `json:"revoked"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/api/cli/v1/logout", []byte("{}"), nil, &r); err != nil {
+		return "", err
+	}
+	return r.Revoked, nil
 }
