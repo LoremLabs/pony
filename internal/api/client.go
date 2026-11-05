@@ -355,7 +355,9 @@ type Event struct {
 	Kind  string `json:"kind"`
 	Card  string `json:"card,omitempty"`
 	Title string `json:"title,omitempty"`
-	Text  string `json:"text"` // what happened, after who
+	Text  string `json:"text"`          // what happened, after who
+	Run   string `json:"run,omitempty"` // the run it belongs to, when it says
+	RID   string `json:"rid,omitempty"` // the request that held that run
 }
 
 // Log is GET /api/cli/v1/log: lines, oldest first, and the cursor to read on

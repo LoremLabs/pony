@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -78,5 +79,53 @@ func TestInstalledBy(t *testing.T) {
 		if got := installedBy(c.method, c.exe); got != c.want {
 			t.Errorf("installedBy(%q, %q) = %q, want %q", c.method, c.exe, got, c.want)
 		}
+	}
+}
+
+func TestHelpHasThePonyOnATerminal(t *testing.T) {
+	aTerminal(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows gets the words alone")
+	}
+	withEnv(t, aPonyTerminal)
+	for _, args := range [][]string{nil, {"help"}, {"--help"}, {"-h"}} {
+		code, out, _ := run(args...)
+		i := strings.Index(out, "pony talks to your OnePony ponies")
+		if code != ExitOK || i < 0 {
+			t.Fatalf("%v: exit %d, %q", args, code, out)
+		}
+		top := out[:i]
+		if !strings.Contains(top, "\x1b[48;5;") || strings.Count(top, "\n") > ponyRows+1 {
+			t.Fatalf("%v: no pony over the help: %q", args, top)
+		}
+		if !strings.HasSuffix(top, "\x1b[0m\n\n") {
+			t.Fatalf("%v: the pony should end clean, a line above the words: %q", args, top[max(0, len(top)-20):])
+		}
+	}
+}
+
+func TestHelpIsItsWordsAloneElsewhere(t *testing.T) {
+	for _, env := range []map[string]string{aPonyTerminal, {"TERM": "xterm-256color", "NO_COLOR": "1"}, {"TERM": "xterm-256color", "CI": "true"}, {"TERM": "dumb"}} {
+		withEnv(t, env)
+		// Not a terminal at all.
+		if code, out, _ := run("help"); code != ExitOK || !strings.HasPrefix(out, "pony talks") {
+			t.Fatalf("%v: exit %d, %q", env, code, out)
+		}
+	}
+	aTerminal(t)
+	for _, env := range []map[string]string{{"TERM": "xterm-256color", "NO_COLOR": "1"}, {"TERM": "xterm-256color", "CI": "true"}, {"TERM": "dumb"}, {"TERM": "xterm"}} {
+		withEnv(t, env)
+		if code, out, _ := run("help"); code != ExitOK || !strings.HasPrefix(out, "pony talks") {
+			t.Fatalf("on a terminal, %v: exit %d, %q", env, code, out[:min(40, len(out))])
+		}
+	}
+}
+
+// A command's own help stays short.
+func TestCommandHelpHasNoPony(t *testing.T) {
+	aTerminal(t)
+	withEnv(t, aPonyTerminal)
+	if _, out, errOut := run("help", "log"); strings.Contains(out+errOut, "\x1b[48;5;") {
+		t.Fatalf("%q", out+errOut)
 	}
 }

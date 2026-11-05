@@ -104,7 +104,14 @@ Feed: `pony log pepper` for one pony, `pony log` for every pony you can reach.
 `-n` says how many lines (20 by default, 100 at most). `-f` keeps printing what
 happens until Ctrl-C, a few seconds behind; with `--json` it prints NDJSON, one
 object per line. It shows what happened, not what was said in a mail: `pony
-watch <card>` has a chat's words.
+watch <card>` has a chat's words. Times are ISO 8601, in UTC. `--debug` adds
+each line's run and request ids, when it has them.
+
+On a terminal the log is laid out for reading: names in a column, each pony in
+its own colour, ✓ and ✗ for how things went, a card's title once rather than
+on every line, a space between cards, and nothing wider than the screen.
+`NO_COLOR` takes the colour and leaves the rest. In a pipe, each line is a
+whole record, so `pony log | grep quotes` finds them all.
 
 `pony watch` prints what was said on a card, then each new line, until the
 pony is done with it: exit 0 when it is, 5 when it waits on you, 7 when its

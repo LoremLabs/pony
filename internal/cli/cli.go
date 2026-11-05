@@ -87,7 +87,25 @@ func find(name string) *command {
 	return nil
 }
 
+// helpPony puts the pony at the top of the help, on a terminal that can draw
+// it. Anywhere else the help is its words alone, for whatever is reading it.
+func helpPony(w io.Writer) {
+	if !isTerminal(w) || getenv("TERM") == "dumb" || getenv("CI") != "" {
+		return
+	}
+	if cols, rows := termSize(w); !canDrawPony(runtime.GOOS, getenv, cols, rows) {
+		return
+	}
+	for _, row := range ponyFrames[0] {
+		if strings.Trim(row, ".") != "" {
+			fmt.Fprintln(w, ponyRow(row))
+		}
+	}
+	fmt.Fprintln(w)
+}
+
 func usage(w io.Writer) {
+	helpPony(w)
 	fmt.Fprint(w, `pony talks to your OnePony ponies from the terminal.
 
 Usage:
