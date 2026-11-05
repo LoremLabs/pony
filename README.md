@@ -72,6 +72,8 @@ pony whoami                      # the account you're signed in as
 pony whoami --json               # and the token: what it reaches (* is every pony), when it ends
 pony list                        # your ponies, and what each is doing
 pony status pepper               # one pony: what it's doing, and the card it's on
+pony log pepper                  # what it's been doing lately
+pony log -f                      # what all your ponies are doing, as it happens
 pony ask pepper "What's on my calendar tomorrow?"
 pony ask pepper - < notes.txt    # the words from stdin
 pony watch wch_3f9a…             # follow a card until the pony is done with it
@@ -96,6 +98,13 @@ file and `--json` never see it.
 While `ask` or `watch` is following a card, the answer comes back here and
 isn't emailed too, unless you've asked for every answer by email. If nothing
 is following when the pony finishes, the answer is emailed to you.
+
+`pony log` shows what's been happening, oldest first, in the words of the
+Feed: `pony log pepper` for one pony, `pony log` for every pony you can reach.
+`-n` says how many lines (20 by default, 100 at most). `-f` keeps printing what
+happens until Ctrl-C, a few seconds behind; with `--json` it prints NDJSON, one
+object per line. It shows what happened, not what was said in a mail: `pony
+watch <card>` has a chat's words.
 
 `pony watch` prints what was said on a card, then each new line, until the
 pony is done with it: exit 0 when it is, 5 when it waits on you, 7 when its

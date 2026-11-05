@@ -345,6 +345,47 @@ type Line struct {
 // wake for it waiting its turn.
 func Busy(state string) bool { return state == "working" || state == "queued" }
 
+// Event is one line of a log: something a pony did, or something done on its
+// cards, in the feed's words.
+type Event struct {
+	ID    string `json:"id"` // a line's own, for telling a line seen from one that isn't
+	At    string `json:"at"`
+	Pony  string `json:"pony"`
+	Who   string `json:"who"` // you, an address, or the pony
+	Kind  string `json:"kind"`
+	Card  string `json:"card,omitempty"`
+	Title string `json:"title,omitempty"`
+	Text  string `json:"text"` // what happened, after who
+}
+
+// Log is GET /api/cli/v1/log: lines, oldest first, and the cursor to read on
+// from. Lines near the cursor come again: a follower drops what it has seen.
+type Log struct {
+	Events []Event `json:"events"`
+	Next   string  `json:"next"`
+}
+
+// ReadLog reads the newest limit lines of one pony's log, or of every pony
+// the token reaches when slug is empty, from the cursor after if there is one.
+func (c *Client) ReadLog(ctx context.Context, slug, after string, limit int) (*Log, error) {
+	path := "/api/cli/v1/log"
+	if slug != "" {
+		path = "/api/cli/v1/ponies/" + url.PathEscape(slug) + "/log"
+	}
+	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	if after != "" {
+		q.Set("after", after)
+	}
+	var r Log
+	if err := c.Get(ctx, path+"?"+q.Encode(), &r); err != nil {
+		return nil, err
+	}
+	if r.Next == "" {
+		r.Next = after
+	}
+	return &r, nil
+}
+
 // ReadCard reads a card, and the lines after the cursor after (0: from
 // the start).
 func (c *Client) ReadCard(ctx context.Context, card string, after int) (*Card, error) {
