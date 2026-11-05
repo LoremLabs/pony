@@ -307,3 +307,17 @@ func TestStatus(t *testing.T) {
 		t.Fatalf("not reached: exit %d", code)
 	}
 }
+
+// What a pony says can't drive the terminal it's shown on.
+func TestAskAndWatchShowRemoteTextInert(t *testing.T) {
+	quick(t)
+	evil := "fine\x1b]52;c;ZXZpbA==\x07\x1b[2J"
+	s := newChatServer(t, step{state: "idle", lines: []api.Line{{Seq: 3, From: "pony", Text: evil}}})
+	withEnv(t, map[string]string{"ONEPONY_TOKEN": testToken, "ONEPONY_SERVER": s.srv.URL})
+	for _, args := range [][]string{{"ask", "pepper", "hello"}, {"watch", "wch_aaaaaaaaaaaaaaaaaaaaaaaa"}} {
+		code, out, errOut := run(args...)
+		if code != ExitOK || strings.Contains(out, "\x1b") || strings.Contains(out, "\x07") || !strings.Contains(out, "fine") {
+			t.Fatalf("%v: exit %d, %q (stderr %q)", args, code, out, errOut)
+		}
+	}
+}

@@ -61,6 +61,9 @@ func init() {
 // Run executes the command line and returns the process exit code.
 func Run(args []string, b Build, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
+		if interactive(stdout) {
+			return runConversation("", b, stdout, stderr)
+		}
 		usage(stdout)
 		return ExitOK
 	}
@@ -74,7 +77,14 @@ func Run(args []string, b Build, stdout, stderr io.Writer) int {
 	if c := find(args[0]); c != nil {
 		return c.run(args[1:], b, stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "pony: unknown command %q\nRun 'pony help' to see the commands.\n", args[0])
+	if len(args) == 1 && slugRE.MatchString(args[0]) && interactive(stdout) {
+		return runConversation(args[0], b, stdout, stderr)
+	}
+	return unknownCommand(args[0], stderr)
+}
+
+func unknownCommand(name string, stderr io.Writer) int {
+	fmt.Fprintf(stderr, "pony: unknown command %q\nRun 'pony help' to see the commands.\n", name)
 	return ExitUsage
 }
 
@@ -117,6 +127,9 @@ Commands:
 		fmt.Fprintf(w, "  %-10s %s\n", c.name, c.summary)
 	}
 	fmt.Fprint(w, `
+On its own in a terminal, pony opens a conversation with your last pony;
+'pony <pony>' opens one with that pony. Leaving it never stops the pony.
+
 Sign in with 'pony login'. Scripts can set ONEPONY_TOKEN to a token from
 your Account page (https://www.onepony.com/settings/account) instead.
 

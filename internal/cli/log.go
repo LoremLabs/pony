@@ -5,13 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/loremlabs/pony/internal/api"
+	"github.com/loremlabs/pony/internal/look"
 )
 
 const (
@@ -34,59 +34,28 @@ const (
 	bold   = "1"
 	dim    = "2"
 	red    = "31"
-	green  = "32"
 	yellow = "33"
 )
 
-// ponyColours are what a pony's name can be: mid-tones of the 256 colours, to
-// read on dark and light backgrounds alike, and none of the red, yellow and
-// green that say how a line went. Each comes plain and bold, so fewer ponies
-// share one. A name's colour goes by the length of this list, so changing it
-// at all recolours every pony.
-var ponyColours = []string{
-	"38;5;33",  // azure
-	"38;5;37",  // teal
-	"38;5;61",  // slate
-	"38;5;98",  // purple
-	"38;5;134", // orchid
-	"38;5;139", // mauve
-	"38;5;168", // rose
-	"1;38;5;33",
-	"1;38;5;37",
-	"1;38;5;61",
-	"1;38;5;98",
-	"1;38;5;134",
-	"1;38;5;139",
-	"1;38;5;168",
-}
-
-// ponyColour is the same for a pony every time, on every machine.
-func ponyColour(pony string) string {
-	return ponyColours[crc32.ChecksumIEEE([]byte(pony))%uint32(len(ponyColours))]
-}
-
-// kindColour is for the lines worth picking out: "" for the rest.
+// kindColour is for the lines that need a look: "" for the rest, a pony
+// answering most of all, which is what's meant to happen.
 func kindColour(kind string) string {
 	switch kind {
 	case "abandoned", "unsent", "file_failed":
 		return red
 	case "waiting", "deferred":
 		return yellow
-	case "done":
-		return green
 	}
 	return ""
 }
 
-// kindMark says at a glance how a line went: " " for most, which say nothing.
+// kindMark picks out the same lines at a glance: " " for the rest.
 func kindMark(kind string) string {
 	switch kind {
 	case "abandoned", "unsent", "file_failed":
 		return "✗"
 	case "waiting", "deferred":
 		return "…"
-	case "done":
-		return "✓"
 	}
 	return " "
 }
@@ -192,6 +161,19 @@ func (v *logView) words(e api.Event) (text, after string) {
 	return text, ""
 }
 
+// sentence brightens what matters for skimming. What was said is the content,
+// at the terminal's full brightness; what happened around it is metadata and
+// stays dim, unless it's a line that needs a look.
+func (v *logView) sentence(text, colour string) string {
+	if colour != "" {
+		return paint(v.colour, colour, text)
+	}
+	if said, ok := strings.CutPrefix(text, "said: "); ok {
+		return paint(v.colour, dim, "said:") + " " + said
+	}
+	return paint(v.colour, dim, text)
+}
+
 // ids are a line's run and request, for --debug: "" when it has neither.
 func logIDs(e api.Event) string {
 	var ids []string
@@ -234,7 +216,7 @@ func (v *logView) line(e api.Event) string {
 	}
 	name := paint(v.colour, bold, who)
 	if e.Who == e.Pony {
-		name = paint(v.colour, ponyColour(e.Pony), who)
+		name = paint(v.colour, look.PonyColour(e.Pony).SGR(), who)
 	}
 	when := logTime(e.At)
 	text, after := v.words(e)
@@ -257,7 +239,7 @@ func (v *logView) line(e api.Event) string {
 
 	colour := kindColour(e.Kind)
 	line := paint(v.colour, dim, when) + "  " + name + "  " + paint(v.colour, colour, kindMark(e.Kind)) + " " +
-		paint(v.colour, colour, text) + paint(v.colour, dim, after)
+		v.sentence(text, colour) + paint(v.colour, dim, after)
 	if ids != "" {
 		line += "  " + paint(v.colour, dim, ids)
 	}

@@ -16,13 +16,15 @@ import (
 	"github.com/loremlabs/pony/internal/api"
 )
 
-// aTerminal makes every writer a terminal of 100 by 40, drawing quickly.
+// aTerminal makes every writer a terminal of 100 by 40, drawing quickly, with
+// nobody at the keyboard.
 func aTerminal(t *testing.T) {
 	t.Helper()
-	oldTerm, oldEvery, oldSize := isTerminal, waitEvery, termSize
+	oldTerm, oldEvery, oldSize, oldStdin := isTerminal, waitEvery, termSize, stdinIsTerminal
 	isTerminal, waitEvery = func(io.Writer) bool { return true }, time.Millisecond
 	termSize = func(io.Writer) (int, int) { return 100, 40 }
-	t.Cleanup(func() { isTerminal, waitEvery, termSize = oldTerm, oldEvery, oldSize })
+	stdinIsTerminal = func() bool { return false }
+	t.Cleanup(func() { isTerminal, waitEvery, termSize, stdinIsTerminal = oldTerm, oldEvery, oldSize, oldStdin })
 }
 
 // aPonyTerminal is an environment that can draw the pony.

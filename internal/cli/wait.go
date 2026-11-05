@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/term"
 )
 
 // What a command shows while it waits on a pony: the pony from the sign-in
@@ -46,16 +48,8 @@ const (
 // isTerminal says whether w is a terminal; tests replace it.
 var isTerminal = func(w io.Writer) bool {
 	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
+	return ok && term.IsTerminal(int(f.Fd()))
 }
-
-// ponyInks are the pony's greys, as 256-colour numbers: every colour
-// terminal has them, and they read on dark and light backgrounds alike.
-var ponyInks = map[byte]int{'k': 16, 'c': 237, 'g': 244, 's': 249, 'm': 253, 'w': 231}
 
 // ponyRow draws a row of the pony in coloured spaces.
 func ponyRow(row string) string {

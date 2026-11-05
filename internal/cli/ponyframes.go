@@ -1,193 +1,20 @@
 package cli
 
-// The pony from the sign-in page: its walk, then grazing. Each letter is one
-// terminal cell, a column of the web pony's pixels and two of its rows: the
-// upper pixel if there is one, else the lower, and the eye always. ponyInks
-// says what the letters are; "." is nothing there.
-const (
-	ponyWidth  = 28 // columns
-	ponyRows   = 12
-	walkFrames = 8
+import "github.com/loremlabs/pony/internal/look"
 
-	// The frames after the walk.
-	grazing        = walkFrames
-	chewing        = walkFrames + 1
-	tailOneWay     = walkFrames + 2
-	tailOtherWay   = walkFrames + 3
-	ponyFrameCount = walkFrames + 4
+// The pony's drawings live in look, shared with the conversation.
+const (
+	ponyWidth      = look.PonyWidth
+	ponyRows       = look.PonyRows
+	walkFrames     = look.WalkFrames
+	grazing        = look.Grazing
+	chewing        = look.Chewing
+	tailOneWay     = look.TailOneWay
+	tailOtherWay   = look.TailOtherWay
+	ponyFrameCount = look.PonyFrameCount
 )
 
-var ponyFrames = [ponyFrameCount][ponyRows]string{
-	{
-		".....................s.s....",
-		"...................ggsssss..",
-		".................gggssksswss",
-		"...............gggsssssssssg",
-		"....gssssssssgggssssssgsssg.",
-		"..gssssssssssssssgssssss....",
-		"..gsssgsssssssssgsssssss....",
-		".ggggssssssssssssssssgg.....",
-		".gg..sssgg......gg.ss.......",
-		"..g...ggg.......gg.gg.......",
-		".......gg......gg..gg.......",
-		".......cc..........cc.......",
-	},
-	{
-		"....................gssss...",
-		"..................gggskswss.",
-		"................gggsssssssws",
-		"..............gggsssssssssgg",
-		"...sgssssssssggssssssss.....",
-		"..gsgssssgsggsssssssssss....",
-		"..gsssssssssssgsgsssssss....",
-		"..gg.ssggggggggggggssg......",
-		"..gg.ssgg.......gggss.......",
-		"...g..ggg........gggg.......",
-		"......gg.........gggg.......",
-		"......cc...........cc.......",
-	},
-	{
-		"............................",
-		"....................gssss...",
-		"..................gggskswss.",
-		"................gggsssssssws",
-		"....gssssssssggggsssssssssgg",
-		"..gssssssssssssssgssssss....",
-		"..gsssgsssssssssgsssssss....",
-		"..gggssssssssssssssssgg.....",
-		"..gg.ssgg.......gggss.......",
-		"...g.gggg........ggg........",
-		".....gggg.........gg........",
-		".....cc...........cc........",
-	},
-	{
-		".....................s.s....",
-		"...................ggsssss..",
-		".................gggssksswss",
-		"...............gggsssssssssg",
-		"....gssssssssgggssssssgsssg.",
-		"..gssssssssssssssgssssss....",
-		"..gsssgsssssssssgsssssss....",
-		"..gggssssssssssssssssgg.....",
-		"..gg.ss.gg......ggsss.......",
-		"...g.gg.gg.......ggg........",
-		".....gg..gg......gg.........",
-		".....cc..........cc.........",
-	},
-	{
-		".....................s.s....",
-		"...................ggsssss..",
-		".................gggssksswss",
-		"...............gggsssssssssg",
-		"....gssssssssgggssssssgsssg.",
-		"..gssssssssssssssgssssss....",
-		"..gsssgsssssssssgsssssss....",
-		".ggggssssssssssssssssgg.....",
-		".gg..ss.ggg.....gg.ss.......",
-		"..g.gg...gg.....gg.gg.......",
-		"....gg....gg....gggg........",
-		"....cc....cc....cc..........",
-	},
-	{
-		"....................gssss...",
-		"..................gggskswss.",
-		"................gggsssssssws",
-		"..............gggsssssssssgg",
-		"...sgssssssssggssssssss.....",
-		"..gsgssssgsggsssssssssss....",
-		".ggsssssssssssgsgsssssss....",
-		".gg..ssggggggggggggssg......",
-		".gg.ss..ggg.....gg.ssg......",
-		".g..gg...gg.....gg..gg......",
-		"...gg....gg.....gg..gg......",
-		"...cc....cc.....cc..........",
-	},
-	{
-		"............................",
-		"....................gssss...",
-		"..................gggskswss.",
-		"................gggsssssssws",
-		"....gssssssssggggsssssssssgg",
-		"..gssssssssssssssgssssss....",
-		"..gsssgsssssssssgsssssss....",
-		".gg.gssssssssssssssssgg.....",
-		"ggg.ss..gg......gg.sss......",
-		".g..gg..gg.....gg...gg......",
-		"....gg..gg.....gg....gg.....",
-		"........cc.....cc....cc.....",
-	},
-	{
-		".....................s.s....",
-		"...................ggsssss..",
-		".................gggssksswss",
-		"...............gggsssssssssg",
-		"....gssssssssgggssssssgsssg.",
-		"..gssssssssssssssgssssss....",
-		"..gsssgsssssssssgsssssss....",
-		".gg.gssssssssssssssssgg.....",
-		".gg..ss.gg.....ggg.ss.......",
-		".gg..gg.gg.....gg...gg......",
-		"......gggg....gg....gg......",
-		"........cc....cc....cc......",
-	},
-	// grazing
-	{
-		"............................",
-		"............................",
-		"............................",
-		"............................",
-		"....gssssssssgggs...........",
-		"..gssssssssssssssgggg.......",
-		"..gsssgsssssssssgssssgggg...",
-		".ggggssssssssssssssssggggggg",
-		".gg..ss.gg......gg.ss.ssskss",
-		"..g..gg.gg......gg.gg..ssssw",
-		".....gg.gg......gg.gg..ssssw",
-		".....cc.cc......cc.cc...ggg.",
-	},
-	// chewing
-	{
-		"............................",
-		"............................",
-		"............................",
-		"............................",
-		"....gssssssssgggs...........",
-		"..gssssssssssssssgggg.......",
-		"..gsssgsssssssssgssssgggg...",
-		".ggggssssssssssssssssggggggg",
-		".gg..ss.gg......gg.ss.ssskss",
-		"..g..gg.gg......gg.gg..ssssw",
-		".....gg.gg......gg.gg..ssssw",
-		".....cc.cc......cc.cc...gg.g",
-	},
-	// tail one way
-	{
-		"............................",
-		"............................",
-		"............................",
-		"............................",
-		"....gssssssssgggs...........",
-		"..gssssssssssssssgggg.......",
-		".ggsssgsssssssssgssssgggg...",
-		".gg.gssssssssssssssssggggggg",
-		"gg...ss.gg......gg.ss.ssskss",
-		"gg...gg.gg......gg.gg..ssssw",
-		".....gg.gg......gg.gg..ssssw",
-		".....cc.cc......cc.cc...ggg.",
-	},
-	// tail the other
-	{
-		"............................",
-		"............................",
-		"............................",
-		"............................",
-		"....gssssssssgggs...........",
-		"..gssssssssssssssgggg.......",
-		"..gsssgsssssssssgssssgggg...",
-		"..gggssssssssssssssssggggggg",
-		"..gg.ss.gg......gg.ss.ssskss",
-		"....ggg.gg......gg.gg..ssssw",
-		".....gg.gg......gg.gg..ssssw",
-		".....cc.cc......cc.cc...ggg.",
-	},
-}
+var (
+	ponyFrames = look.PonyFrames
+	ponyInks   = look.PonyInks
+)

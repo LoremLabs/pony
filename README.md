@@ -66,6 +66,36 @@ you would a password.
 
 ## Use
 
+On its own in a terminal, `pony` opens a conversation with your last pony, or
+asks which one the first time. `pony pepper` opens one with that pony.
+
+```text
+  OnePony                  pepper <pepper@onepony.com>  curious
+  ──────────────────────────────────────────────────────────────────
+  - What's on my calendar tomorrow?
+
+  ┃ Two things: the dentist at 10, and lunch with Dana.
+
+  Pepper is working  12s
+  ──────────────────────────────────────────────────────────────────
+  > Message Pepper…
+```
+
+A pony is already at work somewhere else, so this is joining it rather than
+starting something. Leaving doesn't stop it: come back and you're where you
+were, with anything it said while you were gone. While you're here your answers
+come here; leave, and a later answer is emailed to you. `/new` starts another
+chat, `/ponies` talks to another pony, and typing `/` lists them all. If a pony
+needs your go-ahead, the conversation says what for, and Ctrl+O or `/open` takes
+you to approve it in your browser. Esc, Ctrl+C or Ctrl+D leaves, and asks first
+if you have something unsent. For a new line use
+Ctrl+J, or end the line with a backslash and press Enter; Shift+Enter and
+Ctrl+Enter work where the terminal tells them from Enter. To send a line that
+starts with a slash, start it with two. In a pipe or a script, bare `pony` prints
+the usage.
+
+The commands below work as ever, for one-off asks, scripts and other agents:
+
 ```sh
 pony login                       # sign in, in your browser
 pony whoami                      # the account you're signed in as
@@ -108,8 +138,9 @@ watch <card>` has a chat's words. Times are ISO 8601, in UTC. `--debug` adds
 each line's run and request ids, when it has them.
 
 On a terminal the log is laid out for reading: names in a column, each pony in
-its own colour, ✓ and ✗ for how things went, a card's title once rather than
-on every line, a space between cards, and nothing wider than the screen.
+its own colour, what was said bright against what happened around it, ✗ for
+what went wrong, a card's title once rather than on every line, a space between
+cards, and nothing wider than the screen.
 `NO_COLOR` takes the colour and leaves the rest. In a pipe, each line is a
 whole record, so `pony log | grep quotes` finds them all.
 

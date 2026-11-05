@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"hash/crc32"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loremlabs/pony/internal/api"
+	"github.com/loremlabs/pony/internal/look"
 )
 
 // logServer answers the log routes as OnePony does. Each read takes the next
@@ -87,40 +87,6 @@ func TestLogTime(t *testing.T) {
 	}
 }
 
-func TestPonyColour(t *testing.T) {
-	// crc32(name) % colours, so a pony's colour is the same on every machine.
-	// A change to the list recolours every pony: these say so.
-	for pony, want := range map[string]string{
-		"pepper":  ponyColours[crc32.ChecksumIEEE([]byte("pepper"))%14],
-		"juniper": ponyColours[crc32.ChecksumIEEE([]byte("juniper"))%14],
-	} {
-		if got := ponyColour(pony); got != want {
-			t.Errorf("%s: got %q, want %q", pony, got, want)
-		}
-	}
-	seen := map[string]bool{}
-	for _, p := range []string{"pepper", "juniper", "moss", "fern", "sophie", "emmy", "barley", "clover", "rye"} {
-		seen[ponyColour(p)] = true
-	}
-	if len(seen) < 4 {
-		t.Fatalf("too few colours for nine ponies: %v", seen)
-	}
-	half := len(ponyColours) / 2
-	for i, c := range ponyColours[:half] {
-		if ponyColours[half+i] != "1;"+c {
-			t.Fatalf("%q has no bold twin", c)
-		}
-	}
-	// A name never takes a colour that says how a line went.
-	for _, c := range ponyColours {
-		for _, status := range []string{red, yellow, green, bold, dim} {
-			if c == status {
-				t.Fatalf("%q is a status colour", c)
-			}
-		}
-	}
-}
-
 // aLogTerminal is a view on a terminal of cols columns, colour off unless
 // asked for, so a test can read the layout.
 func aLogTerminal(t *testing.T, cols int, env map[string]string) *logView {
@@ -174,8 +140,8 @@ func TestLogTitleOnce(t *testing.T) {
 		{cardEvent("c1", "said", "said: Got it."), "said: Got it."},
 		{cardEvent("c1", "effect", "sent an email to a@b.test · Quotes"), "sent an email to a@b.test"},
 		{cardEvent("c1", "moved", "moved “Quotes” to Done"), "moved it to Done"},
-		{cardEvent("c1", "done", "answered · Quotes"), "✓ answered"},
-		{cardEvent("c2", "done", "answered · Quotes"), "✓ answered · Quotes"}, // another card: says which
+		{cardEvent("c1", "done", "answered · Quotes"), "answered"},
+		{cardEvent("c2", "done", "answered · Quotes"), "answered · Quotes"}, // another card: says which
 		{cardEvent("c2", "filed", "filed “Quotes” in Ready"), "filed it in Ready"},
 		{cardEvent("c1", "started", "started on “Quotes”"), "started on “Quotes”"}, // back again
 	} {
@@ -220,7 +186,7 @@ func TestLogColumnsLineUp(t *testing.T) {
 	v := aLogTerminal(t, 200, nil)
 	events := []api.Event{
 		{At: today, Pony: "proud", Who: "you", Kind: "said", Text: "said: hi"},
-		{At: today, Pony: "proud", Who: "proud", Kind: "done", Text: "answered"},
+		{At: today, Pony: "proud", Who: "proud", Kind: "unsent", Text: "could not send it"},
 		{At: today, Pony: "proud", Who: "proud", Kind: "abandoned", Text: "could not finish"},
 		{At: today, Pony: "proud", Who: "proud", Kind: "waiting", Text: "is waiting"},
 	}
@@ -303,12 +269,18 @@ func TestLogColours(t *testing.T) {
 	v := aLogTerminal(t, 200, map[string]string{"TERM": "xterm-256color"})
 	line := func(e api.Event) string { return strings.TrimLeft(v.line(e), "\n") }
 	got := line(api.Event{At: today, Pony: "pepper", Who: "pepper", Kind: "done", Card: "c1", Title: "Quotes", Text: "answered · Quotes"})
-	want := "\x1b[2m2026-11-05T14:30:00Z\x1b[0m  \x1b[" + ponyColour("pepper") + "mpepper\x1b[0m  \x1b[32m✓\x1b[0m \x1b[32manswered\x1b[0m\x1b[2m · Quotes\x1b[0m"
+	want := "\x1b[2m2026-11-05T14:30:00Z\x1b[0m  \x1b[" + look.PonyColour("pepper").SGR() + "mpepper\x1b[0m    \x1b[2manswered\x1b[0m\x1b[2m · Quotes\x1b[0m"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
-	if got := line(api.Event{At: today, Pony: "pepper", Who: "you", Kind: "said", Text: "said: hi"}); !strings.Contains(got, "\x1b[1myou   \x1b[0m    said: hi") {
-		t.Errorf("you should stand out, in the column: %q", got)
+	if got := line(api.Event{At: today, Pony: "pepper", Who: "you", Kind: "said", Text: "said: hi"}); !strings.Contains(got, "\x1b[1myou   \x1b[0m    \x1b[2msaid:\x1b[0m hi") {
+		t.Errorf("you should stand out, and what you said brighter than the word for it: %q", got)
+	}
+	if got := line(api.Event{At: today, Pony: "pepper", Who: "pepper", Kind: "said", Text: "said: Got it."}); !strings.HasSuffix(got, "\x1b[2msaid:\x1b[0m Got it.") {
+		t.Errorf("what was said is the content: %q", got)
+	}
+	if got := line(api.Event{At: today, Pony: "pepper", Who: "pepper", Kind: "started", Text: "started on it"}); !strings.HasSuffix(got, "\x1b[2mstarted on it\x1b[0m") {
+		t.Errorf("what happened is metadata: %q", got)
 	}
 	if got := line(api.Event{At: today, Pony: "p", Who: "p", Kind: "abandoned", Text: "gave up"}); !strings.Contains(got, "\x1b[31m✗\x1b[0m \x1b[31mgave up") {
 		t.Errorf("trouble should be red: %q", got)
@@ -368,7 +340,7 @@ func TestFollowOnATerminalKeepsItsPlace(t *testing.T) {
 	s.fail[2] = 401
 	withEnv(t, map[string]string{"ONEPONY_TOKEN": testToken, "ONEPONY_SERVER": s.srv.URL, "NO_COLOR": "1"})
 	_, out, _ := run("log", "-f", "pepper")
-	if !strings.Contains(out, "started on “Quotes”") || !strings.Contains(out, "✓ answered\n") {
+	if !strings.Contains(out, "started on “Quotes”") || !strings.Contains(out, "  answered\n") {
 		t.Fatalf("the title should show once across reads: %q", out)
 	}
 }
@@ -588,6 +560,17 @@ func TestFollowGivesUpOnADeadServer(t *testing.T) {
 func TestHelpNamesLog(t *testing.T) {
 	code, out, _ := run("help")
 	if code != ExitOK || !strings.Contains(out, "log") {
+		t.Fatalf("exit %d, %q", code, out)
+	}
+}
+
+// A mail's subject comes from anyone: the log shows its words, nothing more.
+func TestLogShowsRemoteTextInert(t *testing.T) {
+	evil := "Invoice\x1b]0;owned\x07\x1b[2J"
+	s := newLogServer(t, api.Log{Events: []api.Event{{ID: "a", At: today, Pony: "pepper", Who: "pepper", Kind: "started", Title: evil, Text: "started on “" + evil + "”"}}})
+	withEnv(t, map[string]string{"ONEPONY_TOKEN": testToken, "ONEPONY_SERVER": s.srv.URL})
+	code, out, _ := run("log", "pepper")
+	if code != ExitOK || strings.Contains(out, "\x1b") || !strings.Contains(out, "Invoice") {
 		t.Fatalf("exit %d, %q", code, out)
 	}
 }

@@ -216,6 +216,17 @@ type Pony struct {
 	Doing   string `json:"doing,omitempty"`
 	Ready   bool   `json:"ready"`          // false while it gets ready to start
 	Card    string `json:"card,omitempty"` // the card it works on, or waits on you on
+	Mood    string `json:"mood,omitempty"` // how it's doing: resting, focused, curious…
+}
+
+// Chat is one of a pony's conversations with its owner: a card, which a line
+// carries on however old.
+type Chat struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Via    string `json:"via"` // web (typed) or mail
+	At     string `json:"at,omitempty"`
+	PonyAt string `json:"pony_at,omitempty"`
 }
 
 // Me asks who the token is.
@@ -238,6 +249,9 @@ func (c *Client) Ponies(ctx context.Context) ([]Pony, error) {
 	if r.Ponies == nil {
 		r.Ponies = []Pony{}
 	}
+	for i := range r.Ponies {
+		r.Ponies[i].inert()
+	}
 	return r.Ponies, nil
 }
 
@@ -249,7 +263,24 @@ func (c *Client) Pony(ctx context.Context, slug string) (*Pony, error) {
 	if err := c.Get(ctx, "/api/cli/v1/ponies/"+url.PathEscape(slug), &r); err != nil {
 		return nil, err
 	}
+	r.Pony.inert()
 	return &r.Pony, nil
+}
+
+// Chats lists a pony's chats with its owner, newest first.
+func (c *Client) Chats(ctx context.Context, slug string) ([]Chat, error) {
+	var r struct {
+		Chats []Chat `json:"chats"`
+	}
+	if err := c.Get(ctx, "/api/cli/v1/ponies/"+url.PathEscape(slug)+"/chats", &r); err != nil {
+		return nil, err
+	}
+	for i := range r.Chats {
+		r.Chats[i].ID = Inert(r.Chats[i].ID)
+		r.Chats[i].Title = Inert(r.Chats[i].Title)
+		r.Chats[i].Via = Inert(r.Chats[i].Via)
+	}
+	return r.Chats, nil
 }
 
 // Said is the answer to a line sent to a pony: the card it went on and its
@@ -330,6 +361,16 @@ type Card struct {
 	} `json:"card"`
 	Lines []Line `json:"lines"`
 	Next  int    `json:"next"`
+	Hold  *Hold  `json:"hold,omitempty"` // what it's waiting on you to decide
+}
+
+// Hold is what a pony is waiting for your go-ahead on: why, and what went
+// wrong the last time it was approved. Deciding it happens on the board.
+type Hold struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+	Note   string `json:"note,omitempty"`
 }
 
 // Line is one thing said on a card.
@@ -385,6 +426,9 @@ func (c *Client) ReadLog(ctx context.Context, slug, after string, limit int) (*L
 	if r.Next == "" {
 		r.Next = after
 	}
+	for i := range r.Events {
+		r.Events[i].inert()
+	}
 	return &r, nil
 }
 
@@ -402,6 +446,7 @@ func (c *Client) ReadCard(ctx context.Context, card string, after int) (*Card, e
 	if r.Next < after {
 		r.Next = after
 	}
+	r.inert()
 	return &r, nil
 }
 
