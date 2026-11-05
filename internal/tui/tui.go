@@ -34,10 +34,13 @@ type Result struct {
 	Err  error // what ended it, if something did
 }
 
-const keys = `Enter sends. For a new line: Ctrl+J, or a backslash then Enter, in any terminal;
-Shift+Enter, Ctrl+Enter or Alt+Enter where the terminal tells them apart.
-PgUp and PgDn scroll. Ctrl+O opens this chat in your browser.
-Esc, Ctrl+C or Ctrl+D leaves; the pony carries on.
+const keys = `Enter sends. Shift, Ctrl or Alt+Enter starts a new line, if your terminal
+reports them. For Option+Enter in Apple's Terminal: Use Option as Meta Key.
+PgUp and PgDn scroll. Up on an empty line brings back what you've sent.
+Ctrl+O opens this chat in your browser; on the board, the board.
+Type / for the commands: arrows move, Tab completes, Enter runs, Esc closes.
+Esc, Ctrl+C or Ctrl+D leaves, asking first if something's unsent.
+
 `
 
 // help is the keys and the commands.
@@ -59,13 +62,16 @@ type session struct {
 	v    *view
 	last auth.Last
 
-	slug  string
-	name  string
-	pony  *api.Pony // as last read
-	read  time.Time // when
-	card  string
-	fresh bool // a chat with no first line yet, so the card doesn't exist
-	m     *Model
+	slug string
+	name string
+	pony *api.Pony // as last read
+	read time.Time // when
+	card string
+
+	onBoard bool // the board's on the screen
+	boardAt time.Time
+	fresh   bool // a chat with no first line yet, so the card doesn't exist
+	m       *Model
 
 	failures int
 	failed   struct{ text, key string } // a line that may have landed
@@ -89,6 +95,7 @@ func Run(ctx context.Context, o Options) Result {
 	}
 	v.onSubmit = s.submit
 	v.onOpen = func() { s.act(s.openBoard) }
+	v.onBack = func() { s.act(func(context.Context) { s.onBoard = false }) }
 	if o.Screen != nil {
 		v.app.SetScreen(o.Screen)
 	}
@@ -147,7 +154,11 @@ func (s *session) loop(ctx context.Context) {
 }
 
 func (s *session) wait() time.Duration {
-	return s.m.Wait(clock(), s.failures)
+	wait := s.m.Wait(clock(), s.failures)
+	if s.onBoard {
+		wait = min(wait, boardEvery)
+	}
+	return wait
 }
 
 // act asks the session's goroutine to do something, from the screen's.
@@ -196,6 +207,7 @@ func (s *session) begin(ctx context.Context) {
 
 // pick shows the picker. With no pony open, Esc leaves.
 func (s *session) pick(ctx context.Context, first bool) {
+	s.onBoard = false
 	ponies, err := s.c.Ponies(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -323,11 +335,49 @@ func (s *session) remember() {
 	_ = s.o.Prefs.Put(s.c.Server, s.o.Address, s.last) // a convenience: it can fail
 }
 
+// showBoard opens the board, or says why it can't: an older server has no such
+// route, and that's for here, not a reason to leave.
+func (s *session) showBoard(ctx context.Context) {
+	lanes, err := s.c.Board(ctx)
+	if err != nil {
+		if isAuth(err) {
+			s.leave(err)
+		} else if ctx.Err() == nil {
+			s.note(fmt.Sprintf("Couldn't read the board: %v", err))
+		}
+		return
+	}
+	s.onBoard, s.boardAt = true, clock()
+	s.v.do(func() {
+		s.v.setBoard(lanes, "live")
+		s.v.showBoard()
+	})
+}
+
+// watchBoard keeps an open board live. A read that fails keeps what's on the
+// screen and says so; the next one puts it right.
+func (s *session) watchBoard(ctx context.Context) {
+	if !s.onBoard || clock().Sub(s.boardAt) < boardEvery {
+		return
+	}
+	s.boardAt = clock()
+	lanes, err := s.c.Board(ctx)
+	switch {
+	case err == nil:
+		s.v.do(func() { s.v.setBoard(lanes, "live") })
+	case isAuth(err):
+		s.leave(err)
+	case ctx.Err() == nil:
+		s.v.do(func() { s.v.setBoard(nil, "Reconnecting…") })
+	}
+}
+
 // poll looks at the chat, and at what the pony's been doing while it's busy.
 func (s *session) poll(ctx context.Context) {
 	if s.slug == "" {
 		return
 	}
+	s.watchBoard(ctx)
 	if s.fresh {
 		s.freshPlace(ctx, false) // nothing to read until its first line
 		return
@@ -406,21 +456,32 @@ func (s *session) board() string {
 // openBoard is /open and Ctrl+O: approving happens on the web, so this takes
 // you there. Somewhere with no browser, the address does.
 func (s *session) openBoard(context.Context) {
-	if s.slug == "" || s.fresh {
+	link := s.board()
+	if s.onBoard {
+		link = s.c.Server + "/board"
+	} else if s.slug == "" || s.fresh {
 		s.note("There's nothing to open yet.")
 		return
 	}
-	link := s.board()
 	if s.o.Open == nil {
-		s.note("Open this in a browser: " + link)
+		s.tell("Open this in a browser: " + link)
 		return
 	}
 	if err := s.o.Open(link); err != nil {
-		s.note("Couldn't open a browser here. Open this in one: " + link)
+		s.tell("Couldn't open a browser here. Open this in one: " + link)
 		return
 	}
 	s.m.Opened(clock())
 	s.note("Opened it in your browser.")
+}
+
+// tell says something that has to be read, so an open board gives way to it.
+func (s *session) tell(text string) {
+	if s.onBoard {
+		s.onBoard = false
+		s.v.do(s.v.showChat)
+	}
+	s.note(text)
 }
 
 // gone is a chat or a pony that isn't there any more.
@@ -540,6 +601,8 @@ func (s *session) command(name string) {
 		s.act(func(ctx context.Context) { s.pick(ctx, false) })
 	case "new":
 		s.act(func(context.Context) { s.newChat() })
+	case "board":
+		s.act(s.showBoard)
 	case "status":
 		s.act(s.statusCommand)
 	case "log":

@@ -33,6 +33,10 @@ var (
 	// top: its mood is set a little after a run ends, and it may be busy on
 	// another card. Not on every look: that's a heavier read than the card's.
 	placeEvery = 30 * time.Second
+
+	// boardEvery is how often an open board looks. It reads every card, so
+	// only while it's on the screen.
+	boardEvery = 5 * time.Second
 )
 
 // commandRE is what reads as a command: /word, so a path like /etc/hosts is a
@@ -74,6 +78,7 @@ var Commands = []Command{
 	{"open", "open this chat in your browser, to approve what it's waiting on"},
 	{"ponies", "talk to another pony"},
 	{"new", "start a new chat with this pony"},
+	{"board", "the team's board, live"},
 	{"status", "what this pony is doing"},
 	{"log", "what it's been doing lately"},
 	{"clear", "clear this screen, not the conversation"},

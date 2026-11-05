@@ -219,6 +219,41 @@ type Pony struct {
 	Mood    string `json:"mood,omitempty"` // how it's doing: resting, focused, curious…
 }
 
+// Lane is one column of the board.
+type Lane struct {
+	ID    string      `json:"id"`
+	Name  string      `json:"name"`
+	Count int         `json:"count"` // all of it: Done sends only its newest
+	Cards []BoardCard `json:"cards"`
+}
+
+// BoardCard is a card as the board shows it.
+type BoardCard struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Pony  string `json:"pony,omitempty"`
+	Badge string `json:"badge,omitempty"` // needs_you, asked, waiting, stopped
+}
+
+// Board reads the board, for what the token reaches.
+func (c *Client) Board(ctx context.Context) ([]Lane, error) {
+	var r struct {
+		Lanes []Lane `json:"lanes"`
+	}
+	if err := c.Get(ctx, "/api/cli/v1/board", &r); err != nil {
+		return nil, err
+	}
+	for i := range r.Lanes {
+		l := &r.Lanes[i]
+		l.ID, l.Name = Inert(l.ID), Inert(l.Name)
+		for j := range l.Cards {
+			e := &l.Cards[j]
+			e.ID, e.Title, e.Pony, e.Badge = Inert(e.ID), Inert(e.Title), Inert(e.Pony), Inert(e.Badge)
+		}
+	}
+	return r.Lanes, nil
+}
+
 // Chat is one of a pony's conversations with its owner: a card, which a line
 // carries on however old.
 type Chat struct {

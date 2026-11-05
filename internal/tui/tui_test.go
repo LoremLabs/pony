@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
+	"github.com/rivo/tview"
 
 	"github.com/loremlabs/pony/internal/api"
 	"github.com/loremlabs/pony/internal/auth"
@@ -37,6 +39,9 @@ type fakeServer struct {
 	down    bool
 	signOut bool
 	noChats bool // an older server
+	noBoard bool
+	lanes   []api.Lane
+	boards  int // reads of the board
 	reads   int
 }
 
@@ -82,6 +87,13 @@ func newServer(t *testing.T) *fakeServer {
 		switch {
 		case p == "/api/cli/v1/ponies":
 			send(200, map[string]any{"ok": true, "ponies": f.ponies})
+		case p == "/api/cli/v1/board":
+			if f.noBoard {
+				no(404, "not_found")
+				return
+			}
+			f.boards++
+			send(200, map[string]any{"ok": true, "lanes": f.lanes})
 		case chat.MatchString(p):
 			if len(f.sayFail) > 0 {
 				status := f.sayFail[0]
@@ -184,7 +196,7 @@ type sitting struct {
 // TestMain makes every sitting quick: one setting, since a test can hold two.
 func TestMain(m *testing.M) {
 	pollFast, pollSlow, pollIdle, pollMost = 5*time.Millisecond, 5*time.Millisecond, 5*time.Millisecond, 20*time.Millisecond
-	placeEvery = 10 * time.Millisecond
+	placeEvery, boardEvery = 10*time.Millisecond, 10*time.Millisecond
 	os.Exit(m.Run())
 }
 
@@ -498,7 +510,7 @@ func TestNewLineKeysDoNotSend(t *testing.T) {
 	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
 	s.see("Message Pepper…")
 	s.typeText("one")
-	s.key(tcell.KeyCtrlJ)
+	s.screen.InjectKey(tcell.KeyEnter, 0, tcell.ModShift)
 	s.typeText("two")
 	s.screen.InjectKey(tcell.KeyEnter, 0, tcell.ModAlt)
 	s.typeText("three")
@@ -515,6 +527,22 @@ func TestNewLineKeysDoNotSend(t *testing.T) {
 			t.Fatalf("%q", got)
 		}
 	})
+}
+
+func TestHelpFitsAnOrdinaryTerminal(t *testing.T) {
+	for _, line := range strings.Split(help(), "\n") {
+		if w := runewidth.StringWidth(line); w > 80-2*sidePadding {
+			t.Errorf("%d wide: %q", w, line)
+		}
+	}
+	f := newServer(t)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("Message Pepper…")
+	s.typeText("/help")
+	s.key(tcell.KeyEnter)
+	s.see("Enter sends.")
+	s.see("/board")
+	s.see("//text")
 }
 
 func TestCommandsNeverReachThePony(t *testing.T) {
@@ -1044,13 +1072,42 @@ func TestNoHintsAtTheBottom(t *testing.T) {
 	}
 }
 
+func TestCtrlJIsNotANewLine(t *testing.T) {
+	f := newServer(t)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("Message Pepper…")
+	s.typeText("one")
+	s.key(tcell.KeyCtrlJ)
+	s.typeText("two")
+	s.key(tcell.KeyEnter)
+	s.waitCard(f)
+	f.with(func() {
+		if got := f.said[0]["text"]; got != "onetwo" {
+			t.Fatalf("%q", got)
+		}
+	})
+}
+
+func TestABackslashIsJustABackslash(t *testing.T) {
+	f := newServer(t)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("Message Pepper…")
+	s.typeText(`C:\temp\`)
+	s.key(tcell.KeyEnter)
+	s.waitCard(f)
+	f.with(func() {
+		if got := f.said[0]["text"]; got != `C:\temp\` {
+			t.Fatalf("%q", got)
+		}
+	})
+}
+
 func TestEveryNewLineKeyDoesTheSame(t *testing.T) {
 	for name, press := range map[string]func(*sitting){
 		"Shift+Enter": func(s *sitting) { s.screen.InjectKey(tcell.KeyEnter, 0, tcell.ModShift) },
 		"Ctrl+Enter":  func(s *sitting) { s.screen.InjectKey(tcell.KeyEnter, 0, tcell.ModCtrl) },
 		"Alt+Enter":   func(s *sitting) { s.screen.InjectKey(tcell.KeyEnter, 0, tcell.ModAlt) },
-		"Ctrl+J":      func(s *sitting) { s.key(tcell.KeyCtrlJ) },
-		"backslash":   func(s *sitting) { s.typeText("\\"); s.key(tcell.KeyEnter) },
+		"Meta+Enter":  func(s *sitting) { s.screen.InjectKey(tcell.KeyEnter, 0, tcell.ModMeta) },
 	} {
 		f := newServer(t)
 		s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
@@ -1428,4 +1485,228 @@ func TestALongConversationOpens(t *testing.T) {
 	s.typeText("/clear")
 	s.key(tcell.KeyEnter)
 	s.gone("line 399")
+}
+
+func aBoard() []api.Lane {
+	return []api.Lane{
+		{ID: "backlog", Name: "Backlog", Count: 0},
+		{ID: "ready", Name: "Ready", Count: 1, Cards: []api.BoardCard{{ID: "c1", Title: "Compare quotes", Pony: "pepper"}}},
+		{ID: "doing", Name: "In progress", Count: 1, Cards: []api.BoardCard{{ID: "c2", Title: "Fix the site", Pony: "juniper", Badge: "needs_you"}}},
+		{ID: "blocked", Name: "Blocked", Count: 0},
+		{ID: "done", Name: "Done", Count: 120, Cards: []api.BoardCard{{ID: "c3", Title: "Paid the bill", Pony: "pepper"}}},
+	}
+}
+
+func TestTheBoard(t *testing.T) {
+	f := newServer(t)
+	f.lanes = aBoard()
+	s := sit(t, f, Options{Pony: "pepper"}, 120, 30)
+	s.see("Message Pepper…")
+	s.typeText("/board")
+	s.key(tcell.KeyEnter)
+	s.see("Compare quotes")
+	s.see("Ready 1")
+	s.see("In progress 1")
+	s.see("Fix the site")
+	s.see("juniper  needs you")
+	s.see("Done 120")
+	s.see("+ 119 more")
+	s.see("live")
+
+	// Lanes stand side by side.
+	if got := s.row("Ready 1"); !strings.Contains(got, "In progress 1") || !strings.Contains(got, "Done 120") {
+		t.Fatalf("%q", got)
+	}
+	// It stays live.
+	f.with(func() {
+		f.lanes[1].Cards = append(f.lanes[1].Cards, api.BoardCard{ID: "c9", Title: "A new card", Pony: "juniper"})
+		f.lanes[1].Count = 2
+	})
+	s.see("A new card")
+	s.see("Ready 2")
+
+	// Esc goes back, and it stops reading.
+	s.key(tcell.KeyEscape)
+	s.see("Message Pepper…")
+	time.Sleep(30 * time.Millisecond)
+	var before, after int
+	f.with(func() { before = f.boards })
+	time.Sleep(60 * time.Millisecond)
+	f.with(func() { after = f.boards })
+	if after != before {
+		t.Fatalf("still reading the board: %d then %d", before, after)
+	}
+}
+
+func TestTheBoardCarriesOnThroughAFailure(t *testing.T) {
+	f := newServer(t)
+	f.lanes = aBoard()
+	s := sit(t, f, Options{Pony: "pepper"}, 120, 30)
+	s.see("Message Pepper…")
+	s.typeText("/board")
+	s.key(tcell.KeyEnter)
+	s.see("Compare quotes")
+	f.with(func() { f.down = true })
+	s.see("Reconnecting…")
+	s.see("Compare quotes") // what it knew stays
+	f.with(func() { f.down = false })
+	s.see("live")
+}
+
+func TestAnOlderServerHasNoBoard(t *testing.T) {
+	f := newServer(t)
+	f.noBoard = true
+	s := sit(t, f, Options{Pony: "pepper"}, 100, 30)
+	s.see("Message Pepper…")
+	s.typeText("/board")
+	s.key(tcell.KeyEnter)
+	s.see("Couldn't read the board")
+	s.see("Message Pepper…")
+}
+
+func TestLeavingFromTheBoard(t *testing.T) {
+	f := newServer(t)
+	f.lanes = aBoard()
+	s := sit(t, f, Options{Pony: "pepper"}, 120, 30)
+	s.see("Message Pepper…")
+	s.typeText("/board")
+	s.key(tcell.KeyEnter)
+	s.see("Compare quotes")
+	s.key(tcell.KeyCtrlC)
+	s.left()
+}
+
+func TestOpeningFromTheBoard(t *testing.T) {
+	f := newServer(t)
+	f.lanes = aBoard()
+	opened := make(chan string, 1)
+	s := sit(t, f, Options{Pony: "pepper", Open: func(u string) error { opened <- u; return nil }}, 120, 30)
+	s.see("Message Pepper…")
+	s.typeText("/board")
+	s.key(tcell.KeyEnter)
+	s.see("Compare quotes")
+	s.key(tcell.KeyCtrlO)
+	select {
+	case got := <-opened:
+		if got != f.srv.URL+"/board" {
+			t.Fatalf("%q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing opened")
+	}
+}
+
+func TestRenderBoardColumns(t *testing.T) {
+	out := renderBoard(aBoard(), 110, 30, true)
+	rows := strings.Split(out, "\n")
+	if !strings.Contains(rows[0], "Backlog 0") || !strings.Contains(rows[0], "Done 120") {
+		t.Fatalf("%q", rows[0])
+	}
+	if at := strings.Index(rows[0], "Ready"); at < 15 {
+		t.Fatalf("lanes should stand apart: %q", rows[0])
+	}
+}
+
+func TestRenderBoardCutsToTheRoomThereIs(t *testing.T) {
+	lanes := aBoard()
+	for i := range 40 {
+		lanes[1].Cards = append(lanes[1].Cards, api.BoardCard{ID: strconv.Itoa(i), Title: "Card " + strconv.Itoa(i), Pony: "pepper"})
+	}
+	lanes[1].Count = len(lanes[1].Cards)
+	out := renderBoard(lanes, 110, 20, true)
+	if n := strings.Count(out, "\n"); n > 20 {
+		t.Fatalf("%d rows for 20:\n%s", n, out)
+	}
+	if !strings.Contains(out, "more") {
+		t.Fatalf("it should say what it left out:\n%s", out)
+	}
+}
+
+func TestRenderBoardTruncatesWideTitles(t *testing.T) {
+	lanes := aBoard()
+	lanes[1].Cards[0].Title = strings.Repeat("a very long title ", 10)
+	out := renderBoard(lanes, 100, 30, true)
+	for _, l := range strings.Split(out, "\n") {
+		if tview.TaggedStringWidth(l) > 100 {
+			t.Fatalf("%d wide: %q", tview.TaggedStringWidth(l), l)
+		}
+	}
+	if !strings.Contains(out, "…") {
+		t.Fatalf("it should show it was cut:\n%s", out)
+	}
+}
+
+func TestRenderBoardStacksWhenNarrow(t *testing.T) {
+	out := renderBoard(aBoard(), 40, 30, true)
+	var ready, doing int
+	for i, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "Ready 1") {
+			ready = i
+		}
+		if strings.Contains(l, "In progress 1") {
+			doing = i
+		}
+	}
+	if doing <= ready {
+		t.Fatalf("lanes should stack:\n%s", out)
+	}
+	if !strings.Contains(out, "Compare quotes") || !strings.Contains(out, "+ 119 more") {
+		t.Fatalf("%s", out)
+	}
+}
+
+func TestRenderBoardLeavesEmptyLanesOutToFit(t *testing.T) {
+	out := renderBoard(aBoard(), 76, 24, true) // an 80 column terminal
+	first := strings.SplitN(out, "\n", 2)[0]
+	if strings.Contains(first, "Backlog") || strings.Contains(first, "Blocked") {
+		t.Fatalf("%q", first)
+	}
+	if !strings.Contains(first, "Ready 1") || !strings.Contains(first, "In progress 1") || !strings.Contains(first, "Done 120") {
+		t.Fatalf("%q", first)
+	}
+}
+
+func TestRenderBoardWordsBadges(t *testing.T) {
+	lanes := []api.Lane{{Name: "Ready", Count: 4, Cards: []api.BoardCard{
+		{Title: "a", Pony: "pepper", Badge: "asked"},
+		{Title: "b", Pony: "pepper", Badge: "stopped"},
+		{Title: "c", Badge: "waiting"},
+		{Title: "d", Pony: "a-very-long-pony-name-indeed", Badge: "needs_you"},
+	}}}
+	out := regexp.MustCompile(`\[[^\]]*\]`).ReplaceAllString(renderBoard(lanes, 20, 30, true), "")
+	for _, want := range []string{"pepper  asked you", "pepper  stopped", "waiting", "a-very-l…  needs you"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("no %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderBoardWithNothingOnIt(t *testing.T) {
+	lanes := []api.Lane{{Name: "Ready"}, {Name: "Done"}, {Name: "Blocked"}}
+	if out := renderBoard(lanes, 30, 24, true); !strings.Contains(out, "Ready 0") {
+		t.Fatalf("%q", out)
+	}
+}
+
+func TestTheAddressIsReadableFromTheBoard(t *testing.T) {
+	f := newServer(t)
+	f.lanes = aBoard()
+	s := sit(t, f, Options{Pony: "pepper"}, 120, 30) // no browser here
+	s.see("Message Pepper…")
+	s.typeText("/board")
+	s.key(tcell.KeyEnter)
+	s.see("Compare quotes")
+	s.key(tcell.KeyCtrlO)
+	s.see("Open this in a browser:")
+	s.see("/board")
+	s.see("Message Pepper…")
+}
+
+func TestRenderBoardIsInert(t *testing.T) {
+	lanes := aBoard()
+	lanes[1].Cards[0].Title = "[red]not red[-]"
+	s := renderBoard(lanes, 110, 30, false)
+	if strings.Contains(s, "[red]not") {
+		t.Fatalf("a title read as markup: %q", s)
+	}
 }

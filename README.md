@@ -88,11 +88,10 @@ come here; leave, and a later answer is emailed to you. `/new` starts another
 chat, `/ponies` talks to another pony, and typing `/` lists them all. If a pony
 needs your go-ahead, the conversation says what for, and Ctrl+O or `/open` takes
 you to approve it in your browser. Esc, Ctrl+C or Ctrl+D leaves, and asks first
-if you have something unsent. For a new line use
-Ctrl+J, or end the line with a backslash and press Enter; Shift+Enter and
-Ctrl+Enter work where the terminal tells them from Enter. To send a line that
-starts with a slash, start it with two. In a pipe or a script, bare `pony` prints
-the usage.
+if you have something unsent. For a new line use Shift+Enter, Ctrl+Enter or
+Alt+Enter, where the terminal reports them; in Apple's Terminal, Option+Enter
+with Use Option as Meta Key turned on. To send a line that starts with a slash,
+start it with two. In a pipe or a script, bare `pony` prints the usage.
 
 The commands below work as ever, for one-off asks, scripts and other agents:
 

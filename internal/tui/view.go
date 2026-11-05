@@ -26,6 +26,7 @@ const prompt = "> "
 const (
 	pageChat   = "chat"
 	pagePicker = "picker"
+	pageBoard  = "board"
 )
 
 // inTerminalColours has the screen use the terminal's own colours: tview's
@@ -67,10 +68,14 @@ type view struct {
 	picker   *tview.List
 	welcome  *tview.TextView
 	pickHint *tview.TextView
+	board    *tview.TextView
+	boardNow *tview.TextView
 	plain    bool // NO_COLOR
 
 	entries []entry // what's in the conversation, to wrap again on a resize
 	width   int     // the columns they're wrapped to
+	lanes   []api.Lane
+	height  int
 
 	stopped chan struct{}
 	once    sync.Once
@@ -78,6 +83,7 @@ type view struct {
 	// On tview's goroutine only.
 	onSubmit func(text string)
 	onOpen   func()
+	onBack   func()    // leaving the board
 	warned   bool      // a draft has been warned about
 	matches  []Command // what the / menu offers now
 	menuAt   int       // which of them is picked
@@ -136,7 +142,19 @@ func newView(plain bool) *view {
 		AddItem(v.pickHint, 1, 0, false)
 	v.pick.SetBorderPadding(1, 0, sidePadding, sidePadding)
 
+	v.board = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(false)
+	v.boardNow = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignRight)
+	boardTop := tview.NewFlex().
+		AddItem(tview.NewTextView().SetText("OnePony"), 0, 1, false).
+		AddItem(v.boardNow, 0, 3, false)
+	boardPage := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(boardTop, 1, 0, false).
+		AddItem(rule(), 1, 0, false).
+		AddItem(v.board, 0, 1, true)
+	boardPage.SetBorderPadding(0, 0, sidePadding, sidePadding)
+
 	v.pages.AddPage(pagePicker, v.pick, true, false)
+	v.pages.AddPage(pageBoard, boardPage, true, false)
 	v.pages.AddPage(pageChat, v.chat, true, true)
 
 	v.app.EnablePaste(true)
@@ -437,6 +455,30 @@ func (v *view) setStatus(text string) {
 	v.status.SetText("[::d]" + safe(text) + "[-::-]")
 }
 
+// showBoard puts the board on the screen, and drawBoard fills it in. Each read
+// replaces it whole, keeping your place if you've scrolled.
+func (v *view) showBoard() {
+	v.pages.SwitchToPage(pageBoard)
+	v.app.SetFocus(v.board)
+	v.repaint()
+}
+
+// setBoard is what a read found, and word how the reads are going.
+func (v *view) setBoard(lanes []api.Lane, word string) {
+	if lanes != nil {
+		v.lanes = lanes
+		v.drawBoard()
+	}
+	v.boardNow.SetText("Board  [::d]" + word + "   Esc back[-::-]")
+}
+
+func (v *view) drawBoard() {
+	row, _ := v.board.GetScrollOffset()
+	// Two rows for the top of the page.
+	v.board.SetText(renderBoard(v.lanes, v.width, v.height-2, v.plain))
+	v.board.ScrollTo(row, 0)
+}
+
 func (v *view) showChat() {
 	v.pages.SwitchToPage(pageChat)
 	v.app.SetFocus(v.composer)
@@ -551,6 +593,11 @@ func (v *view) fit(screen tcell.Screen) bool {
 	if w := width - 2*sidePadding; w != v.width {
 		v.width = w
 		v.render()
+		v.drawBoard()
+	}
+	if height != v.height {
+		v.height = height
+		v.drawBoard()
 	}
 	rows := 0
 	if !v.plain && height >= look.PonyRows+v.picker.GetItemCount()+8 {
@@ -656,26 +703,19 @@ func (v *view) composerKey(ev *tcell.EventKey) *tcell.EventKey {
 	if v.menuKey(ev) {
 		return nil
 	}
-	newline := tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
 	switch ev.Key() {
 	case tcell.KeyEnter:
-		// Shift, Ctrl or Alt with Enter, for a terminal that says so. Many send
-		// the same as Enter, so a backslash before it works on all of them.
-		if ev.Modifiers()&(tcell.ModAlt|tcell.ModShift|tcell.ModCtrl) != 0 {
-			return newline
+		// Enter with a modifier, for a terminal that says so. Many send the
+		// same as Enter, and that's a line sent.
+		if ev.Modifiers() != tcell.ModNone {
+			return tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
 		}
 		text := v.composer.GetText()
-		if kept, ok := strings.CutSuffix(text, "\\"); ok {
-			v.composer.SetText(kept+"\n", true)
-			return nil
-		}
 		if v.onSubmit != nil && strings.TrimSpace(text) != "" {
 			v.recall = 0
 			v.onSubmit(text)
 		}
 		return nil
-	case tcell.KeyCtrlJ:
-		return newline
 	case tcell.KeyPgUp, tcell.KeyPgDn:
 		v.scroll(ev)
 		return nil
@@ -710,11 +750,15 @@ func (v *view) appKey(ev *tcell.EventKey) *tcell.EventKey {
 	page, _ := v.pages.GetFrontPage()
 	switch ev.Key() {
 	case tcell.KeyCtrlO:
-		if page == pageChat && v.onOpen != nil {
+		if page != pagePicker && v.onOpen != nil {
 			v.onOpen()
 		}
 		return nil
 	case tcell.KeyEscape:
+		if page == pageBoard {
+			v.leaveBoard()
+			return nil
+		}
 		if page == pagePicker || len(v.matches) > 0 {
 			return ev
 		}
@@ -729,6 +773,13 @@ func (v *view) appKey(ev *tcell.EventKey) *tcell.EventKey {
 	}
 	v.app.Stop()
 	return nil
+}
+
+func (v *view) leaveBoard() {
+	if v.onBack != nil {
+		v.onBack()
+	}
+	v.showChat()
 }
 
 // clock is how the session tells the time; tests don't replace it, but one
