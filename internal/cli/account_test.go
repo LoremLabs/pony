@@ -28,7 +28,7 @@ func fakeServer(t *testing.T) *httptest.Server {
 		}
 		switch r.URL.Path {
 		case "/api/cli/v1/me":
-			answer(w, 200, `{"ok":true,"address":"ada@example.com","name":"Ada","token":{"id":"tok_aaaaaaaaaaaa","name":"Laptop","ponies":["pepper"],"expires":"2026-12-01T20:00:00Z"}}`)
+			answer(w, 200, `{"ok":true,"address":"ada@example.com","name":"Ada","token":{"id":"tok_aaaaaaaaaaaa","name":"Laptop","ponies":"*","expires":"2026-12-01T20:00:00Z"}}`)
 		case "/api/cli/v1/ponies":
 			answer(w, 200, `{"ok":true,"ponies":[{"slug":"front-desk","name":"Front Desk","address":"front-desk@mail.example","status":"working","doing":"Taxes","ready":true},{"slug":"pepper","name":"Pepper","address":"pepper@mail.example","status":"available","doing":"","ready":false}]}`)
 		default:
@@ -65,9 +65,8 @@ func TestWhoami(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	want := "Ada <ada@example.com>\ntoken \"Laptop\" reaches pepper, until 2026-12-01\n"
-	if out != want {
-		t.Fatalf("got %q, want %q", out, want)
+	if out != "ada@example.com\n" {
+		t.Fatalf("got %q, want the address and nothing else", out)
 	}
 	if !strings.Contains(errOut, "using "+srv.URL) {
 		t.Fatalf("a server other than the default should be named on stderr: %q", errOut)
@@ -75,9 +74,18 @@ func TestWhoami(t *testing.T) {
 	noToken(t, out, errOut)
 
 	code, out, _ = run("whoami", "--json")
-	var me map[string]any
-	if code != ExitOK || json.Unmarshal([]byte(out), &me) != nil || me["address"] != "ada@example.com" {
+	var me struct {
+		Address, Name string
+		Token         struct {
+			ID, Name, Ponies, Expires string
+		}
+	}
+	if code != ExitOK || json.Unmarshal([]byte(out), &me) != nil {
 		t.Fatalf("--json: exit %d, %q", code, out)
+	}
+	if me.Address != "ada@example.com" || me.Name != "Ada" || me.Token.ID != "tok_aaaaaaaaaaaa" ||
+		me.Token.Name != "Laptop" || me.Token.Ponies != "*" || me.Token.Expires != "2026-12-01T20:00:00Z" {
+		t.Fatalf("--json should keep everything the server said: %q", out)
 	}
 }
 

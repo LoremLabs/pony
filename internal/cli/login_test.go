@@ -64,13 +64,13 @@ func newLoginServer(t *testing.T) *loginServer {
 				fail(w, 400, "login_bad")
 				return
 			}
-			answer(w, 200, map[string]any{"ok": true, "secret": testToken, "token": map[string]any{"id": "tok_bbbbbbbbbbbb", "name": "pony on testbox", "ponies": "all", "expires": "2027-02-02T18:00:00Z"}})
+			answer(w, 200, map[string]any{"ok": true, "secret": testToken, "token": map[string]any{"id": "tok_bbbbbbbbbbbb", "name": "pony on testbox", "ponies": "*", "expires": "2027-02-02T18:00:00Z"}})
 		case "/api/cli/v1/me":
 			if ls.revoked || r.Header.Get("Authorization") != "Bearer "+testToken {
 				fail(w, 401, "not_signed_in")
 				return
 			}
-			answer(w, 200, map[string]any{"ok": true, "address": "ada@example.com", "name": "Ada", "token": map[string]any{"id": "tok_bbbbbbbbbbbb", "name": "pony on testbox", "ponies": "all", "expires": "2027-02-02T18:00:00Z"}})
+			answer(w, 200, map[string]any{"ok": true, "address": "ada@example.com", "name": "Ada", "token": map[string]any{"id": "tok_bbbbbbbbbbbb", "name": "pony on testbox", "ponies": "*", "expires": "2027-02-02T18:00:00Z"}})
 		case "/api/cli/v1/logout":
 			ls.logouts++
 			ls.bearers = append(ls.bearers, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -192,7 +192,7 @@ func TestLogin(t *testing.T) {
 	}
 
 	// Signed in: no ONEPONY_TOKEN needed.
-	if code, out, _ := run("whoami"); code != ExitOK || !strings.HasPrefix(out, "Ada <ada@example.com>") {
+	if code, out, _ := run("whoami"); code != ExitOK || out != "ada@example.com\n" {
 		t.Fatalf("whoami after login: exit %d, %q", code, out)
 	}
 

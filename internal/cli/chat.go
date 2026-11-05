@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -34,10 +35,11 @@ const (
 	maxStdin = 64 << 10
 )
 
-// interrupted is a context that ends on Ctrl-C. It stops the waiting, never
-// the pony.
+// interrupted is a context that ends on Ctrl-C, or when something else asks
+// the command to stop. It stops the waiting, never the pony, and it's how the
+// drawing gets to clean up and give the cursor back.
 func interrupted() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), os.Interrupt)
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // readLine is what to say: the words after the pony, or stdin for "-".
@@ -210,8 +212,11 @@ Flags:
 	if on == "" {
 		on = api.NewCard()
 	}
+	wait := startWaiting(stderr, *asJSON, "sending to "+slug)
+	defer wait.stop()
 	said, err := c.Say(ctx, slug, text, on, api.NewKey())
 	if err != nil {
+		wait.stop()
 		if ctx.Err() != nil {
 			return gaveUp(ctx, stderr, "", "sending")
 		}
@@ -229,15 +234,18 @@ Flags:
 
 	var answer []api.Line
 	sinceReply := 0
-	f := &follower{c: c, card: said.Card, after: said.Seq, line: func(l api.Line) {
-		if l.From != "pony" {
-			return // someone typing on the same chat in the browser: theirs to see there
-		}
-		answer = append(answer, l)
-		if !*asJSON {
-			fmt.Fprintln(stdout, l.Text)
-		}
-	}}
+	f := &follower{c: c, card: said.Card, after: said.Seq,
+		line: func(l api.Line) {
+			if l.From != "pony" {
+				return // someone typing on the same chat in the browser: theirs to see there
+			}
+			answer = append(answer, l)
+			if !*asJSON {
+				wait.print(func() { fmt.Fprintln(stdout, l.Text) })
+			}
+		},
+		onSet: func(s string) { wait.say(busyWords(slug, s)) },
+	}
 	state, err := f.run(ctx, func(r *api.Card) bool {
 		if api.Busy(r.Card.State) {
 			sinceReply = 0
@@ -251,6 +259,7 @@ Flags:
 		sinceReply++
 		return sinceReply >= settleFor
 	})
+	wait.stop()
 	if err != nil {
 		if ctx.Err() != nil {
 			return gaveUp(ctx, stderr, said.Card, "waiting")
@@ -344,6 +353,8 @@ Flags:
 	emit := func(v any) {
 		printJSON(stdout, stderr, v)
 	}
+	wait := startWaiting(stderr, *asJSON, "following")
+	defer wait.stop()
 	var f *follower
 	f = &follower{c: c, card: card, after: *after,
 		line: func(l api.Line) {
@@ -355,17 +366,21 @@ Flags:
 			if l.From == "pony" {
 				who = f.pony
 			}
-			fmt.Fprintf(stdout, "%s: %s\n", who, l.Text)
+			wait.print(func() { fmt.Fprintf(stdout, "%s: %s\n", who, l.Text) })
 		},
 		onSet: func(s string) {
-			if *asJSON {
+			switch {
+			case *asJSON:
 				emit(map[string]any{"type": "state", "card": card, "state": s})
-			} else if s == "working" || s == "queued" {
+			case wait != nil:
+				wait.say(busyWords(f.pony, s))
+			case s == "working" || s == "queued":
 				fmt.Fprintf(stderr, "pony: %s is %s\n", f.pony, map[string]string{"working": "working on it", "queued": "busy; this card is next"}[s])
 			}
 		},
 	}
 	state, err := f.run(ctx, func(r *api.Card) bool { return !api.Busy(r.Card.State) })
+	wait.stop()
 	if err != nil {
 		if ctx.Err() != nil {
 			return gaveUp(ctx, stderr, "", "watching")

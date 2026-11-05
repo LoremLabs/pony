@@ -68,7 +68,8 @@ you would a password.
 
 ```sh
 pony login                       # sign in, in your browser
-pony whoami                      # the account you're signed in as, and what the token reaches
+pony whoami                      # the account you're signed in as
+pony whoami --json               # and the token: what it reaches (* is every pony), when it ends
 pony list                        # your ponies, and what each is doing
 pony status pepper               # one pony: what it's doing, and the card it's on
 pony ask pepper "What's on my calendar tomorrow?"
@@ -86,6 +87,15 @@ links the card on your board and exits 5. `--timeout` (10 minutes by
 default) or Ctrl-C stops the waiting, not the pony, and `pony watch <card>`
 picks it up from there. A line sent again after a network failure reaches
 the pony once.
+
+While they wait in a terminal, `ask` and `watch` show a pony ambling about and
+grazing, with how long it's been (a plain spinner on Windows, without 256
+colours, or under `NO_COLOR`). It goes to stderr and clears itself: a pipe, a
+file and `--json` never see it.
+
+While `ask` or `watch` is following a card, the answer comes back here and
+isn't emailed too, unless you've asked for every answer by email. If nothing
+is following when the pony finishes, the answer is emailed to you.
 
 `pony watch` prints what was said on a card, then each new line, until the
 pony is done with it: exit 0 when it is, 5 when it waits on you, 7 when its

@@ -198,24 +198,13 @@ type Me struct {
 	Token   TokenInfo `json:"token"`
 }
 
-// TokenInfo describes the token in use. Ponies is "all" or a list of
-// slugs.
+// TokenInfo describes the token in use. Ponies is "*" (every pony) or a
+// list of slugs, kept as the server said it: nothing here reads it.
 type TokenInfo struct {
 	ID      string          `json:"id"`
 	Name    string          `json:"name"`
 	Ponies  json.RawMessage `json:"ponies"`
 	Expires string          `json:"expires"`
-}
-
-// Reach says what the token reaches: nil for every pony, else the slugs.
-func (t TokenInfo) Reach() []string {
-	var all string
-	if json.Unmarshal(t.Ponies, &all) == nil && all == "all" {
-		return nil
-	}
-	var slugs []string
-	_ = json.Unmarshal(t.Ponies, &slugs)
-	return slugs
 }
 
 // Pony is one entry of GET /api/cli/v1/ponies.

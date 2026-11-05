@@ -133,7 +133,7 @@ func runWhoami(args []string, b Build, stdout, stderr io.Writer) int {
 	asJSON := fs.Bool("json", false, "print the answer as JSON")
 	server := fs.String("server", "", serverHelp)
 	fs.Usage = func() {
-		fmt.Fprint(stderr, "Usage: pony whoami [--json]\n\nShow the account your token signs in as, and what the token reaches.\nThe token is read from ONEPONY_TOKEN.\n\nFlags:\n")
+		fmt.Fprint(stderr, "Usage: pony whoami [--json]\n\nShow the account you're signed in as. --json adds the account's name and\nthe token: its name, what it reaches (\"*\" is every pony) and when it ends.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if _, code, ok := parse(fs, args, 0); !ok {
@@ -150,20 +150,7 @@ func runWhoami(args []string, b Build, stdout, stderr io.Writer) int {
 	if *asJSON {
 		return printJSON(stdout, stderr, me)
 	}
-	who := me.Address
-	if me.Name != "" {
-		who = fmt.Sprintf("%s <%s>", me.Name, me.Address)
-	}
-	fmt.Fprintln(stdout, who)
-	reach := "all your ponies"
-	if slugs := me.Token.Reach(); slugs != nil {
-		reach = strings.Join(slugs, ", ")
-	}
-	expires := me.Token.Expires
-	if len(expires) >= 10 {
-		expires = expires[:10]
-	}
-	fmt.Fprintf(stdout, "token %q reaches %s, until %s\n", me.Token.Name, reach, expires)
+	fmt.Fprintln(stdout, me.Address)
 	return ExitOK
 }
 
