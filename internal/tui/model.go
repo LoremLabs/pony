@@ -122,6 +122,7 @@ const heldWords = "stopped for a go-ahead"
 // it, and only the session's goroutine touches it.
 type Model struct {
 	After    int    // the card's cursor
+	Oldest   int    // the seq of the earliest line read, for reading further back
 	LogAfter string // the log's
 	State    string // the card's, as last read
 	lines    map[int]bool
@@ -142,6 +143,9 @@ func NewModel() *Model {
 func (m *Model) Lines(r *api.Card) []api.Line {
 	var fresh []api.Line
 	for _, l := range r.Lines {
+		if m.Oldest == 0 || l.Seq < m.Oldest {
+			m.Oldest = l.Seq
+		}
 		if m.lines[l.Seq] {
 			continue
 		}

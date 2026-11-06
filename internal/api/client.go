@@ -396,6 +396,7 @@ type Card struct {
 	} `json:"card"`
 	Lines []Line `json:"lines"`
 	Next  int    `json:"next"`
+	More  bool   `json:"more"`           // there may be lines from before these
 	Hold  *Hold  `json:"hold,omitempty"` // what it's waiting on you to decide
 }
 
@@ -470,16 +471,31 @@ func (c *Client) ReadLog(ctx context.Context, slug, after string, limit int) (*L
 // ReadCard reads a card, and the lines after the cursor after (0: from
 // the start).
 func (c *Client) ReadCard(ctx context.Context, card string, after int) (*Card, error) {
-	path := "/api/cli/v1/cards/" + url.PathEscape(card)
-	if after > 0 {
-		path += "?after=" + strconv.Itoa(after)
-	}
-	var r Card
-	if err := c.Get(ctx, path, &r); err != nil {
+	r, err := c.readCard(ctx, card, "after", after)
+	if err != nil {
 		return nil, err
 	}
 	if r.Next < after {
 		r.Next = after
+	}
+	return r, nil
+}
+
+// ReadEarlier reads the lines just ahead of the line before, as many as one
+// read takes. A server from before this answers as ReadCard does, with no
+// More to send anyone back here.
+func (c *Client) ReadEarlier(ctx context.Context, card string, before int) (*Card, error) {
+	return c.readCard(ctx, card, "before", before)
+}
+
+func (c *Client) readCard(ctx context.Context, card, cursor string, at int) (*Card, error) {
+	path := "/api/cli/v1/cards/" + url.PathEscape(card)
+	if at > 0 {
+		path += "?" + cursor + "=" + strconv.Itoa(at)
+	}
+	var r Card
+	if err := c.Get(ctx, path, &r); err != nil {
+		return nil, err
 	}
 	r.inert()
 	return &r, nil

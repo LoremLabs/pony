@@ -43,6 +43,12 @@ type fakeServer struct {
 	lanes   []api.Lane
 	boards  int // reads of the board
 	reads   int
+
+	page        int           // the lines a read takes; 0: all of them
+	old         bool          // a server from before `before` and `more`
+	earlier     []int         // the cursors read back from
+	earlierFail int           // reads of them to refuse
+	gate        chan struct{} // holds a read of them until it's closed
 }
 
 type fakeCard struct {
@@ -138,15 +144,39 @@ func newServer(t *testing.T) *fakeServer {
 				return
 			}
 			after, _ := strconv.Atoi(r.URL.Query().Get("after"))
+			before, _ := strconv.Atoi(r.URL.Query().Get("before"))
+			if f.old {
+				before = 0
+			}
+			if before > 0 {
+				f.earlier = append(f.earlier, before)
+				if f.earlierFail > 0 {
+					f.earlierFail--
+					no(503, "unavailable")
+					return
+				}
+				if gate := f.gate; gate != nil {
+					f.mu.Unlock()
+					<-gate
+					f.mu.Lock()
+				}
+			}
 			lines := []api.Line{}
 			next := after
 			for _, l := range c.lines {
-				if l.Seq > after {
+				if l.Seq > after && (before == 0 || l.Seq < before) {
 					lines = append(lines, l)
 					next = l.Seq
 				}
 			}
+			more := f.page > 0 && len(lines) >= f.page
+			if more {
+				lines = lines[len(lines)-f.page:]
+			}
 			reply := map[string]any{"ok": true, "card": map[string]string{"id": "x", "pony": c.pony, "state": c.state}, "lines": lines, "next": next}
+			if !f.old {
+				reply["more"] = more
+			}
 			if c.hold != nil {
 				reply["hold"] = c.hold
 			}
@@ -798,7 +828,7 @@ func TestPickerFromAConversationSaysEscGoesBack(t *testing.T) {
 	s.left()
 }
 
-func TestUpRecallsOnlyFromAnEmptyComposer(t *testing.T) {
+func TestCtrlPRecallsOnlyFromAnEmptyComposer(t *testing.T) {
 	f := newServer(t)
 	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
 	s.see("Message Pepper…")
@@ -807,21 +837,311 @@ func TestUpRecallsOnlyFromAnEmptyComposer(t *testing.T) {
 	s.see("Pepper is working")
 	f.answer(s.waitCard(f), "ok")
 	s.see("ok")
-	s.key(tcell.KeyUp)
+	s.key(tcell.KeyCtrlP)
 	deadline := time.Now().Add(5 * time.Second)
 	for strings.Count(s.text(), "the first thing") < 2 {
 		if time.Now().After(deadline) {
-			t.Fatalf("Up brought nothing back:\n%s", s.text())
+			t.Fatalf("Ctrl+P brought nothing back:\n%s", s.text())
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	s.key(tcell.KeyDown)
+	s.key(tcell.KeyCtrlN)
 	for strings.Count(s.text(), "the first thing") > 1 {
 		if time.Now().After(deadline) {
-			t.Fatalf("Down should clear it:\n%s", s.text())
+			t.Fatalf("Ctrl+N should clear it:\n%s", s.text())
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+	s.typeText("a draft")
+	s.see("a draft")
+	s.key(tcell.KeyCtrlP)
+	time.Sleep(30 * time.Millisecond)
+	s.see("a draft")
+	if n := strings.Count(s.text(), "the first thing"); n != 1 {
+		t.Fatalf("Ctrl+P replaced a draft:\n%s", s.text())
+	}
+}
+
+// aLongAnswer has Pepper say sixty lines, too many for the screen.
+func aLongAnswer(s *sitting, f *fakeServer) (card string) {
+	s.see("Message Pepper…")
+	s.typeText("tell me everything")
+	s.key(tcell.KeyEnter)
+	s.see("Pepper is working")
+	var lines []string
+	for i := 1; i <= 60; i++ {
+		lines = append(lines, "thing "+strconv.Itoa(i)+".")
+	}
+	card = s.waitCard(f)
+	f.answer(card, strings.Join(lines, "\n"))
+	s.see("thing 60.")
+	return card
+}
+
+// aLongChat is a chat of n lines already had with Pepper, to open on.
+func (f *fakeServer) aLongChat(n int) {
+	f.chats["pepper"] = []api.Chat{{ID: "wch_long", Via: "web"}}
+	c := &fakeCard{pony: "pepper", state: "idle"}
+	for i := 1; i <= n; i++ {
+		c.lines = append(c.lines, api.Line{Seq: i + 1, From: []string{"you", "pony"}[i%2], Text: "line " + strconv.Itoa(i) + "."})
+	}
+	f.cards["wch_long"] = c
+}
+
+// reachedBack is how many reads of earlier lines there have been.
+func (f *fakeServer) reachedBack() (n int) {
+	f.with(func() { n = len(f.earlier) })
+	return n
+}
+
+// said is everything in the conversation, on tview's goroutine.
+func (s *sitting) said() []string {
+	s.t.Helper()
+	v := s.view()
+	got := make(chan []string, 1)
+	go v.app.QueueUpdate(func() {
+		texts := make([]string, len(v.entries))
+		for i, e := range v.entries {
+			texts[i] = e.text
+		}
+		got <- texts
+	})
+	select {
+	case texts := <-got:
+		return texts
+	case <-time.After(5 * time.Second):
+		s.t.Fatal("the screen stopped answering")
+		return nil
+	}
+}
+
+// scrollUpTo pages up until want is on the screen.
+func (s *sitting) scrollUpTo(want string) {
+	s.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(s.text(), want) {
+		if time.Now().After(deadline) {
+			s.t.Fatalf("never reached %q on:\n%s", want, s.text())
+		}
+		s.key(tcell.KeyPgUp)
+	}
+}
+
+// scrollUpUntilAsked pages up until the first read of earlier lines goes.
+func (s *sitting) scrollUpUntilAsked(f *fakeServer) {
+	s.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for f.reachedBack() == 0 {
+		if time.Now().After(deadline) {
+			s.t.Fatalf("it never read further back, on:\n%s", s.text())
+		}
+		s.key(tcell.KeyPgUp)
+		s.text() // let it land
+	}
+}
+
+func TestScrollingUpReadsEarlierLines(t *testing.T) {
+	f := newServer(t)
+	f.page = 100
+	f.aLongChat(250)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("line 250.")
+	if n := len(s.said()); n != 100 {
+		t.Fatalf("opened with %d lines, not one read's", n)
+	}
+	s.scrollUpTo("line 1.")
+	got := s.said()
+	if len(got) != 250 {
+		t.Fatalf("%d lines", len(got))
+	}
+	for i, text := range got {
+		if want := "line " + strconv.Itoa(i+1) + "."; text != want {
+			t.Fatalf("line %d says %q", i, text)
+		}
+	}
+	f.with(func() {
+		if len(f.earlier) != 2 || f.earlier[0] != 152 || f.earlier[1] != 52 {
+			t.Errorf("read back from %v, not each page's first line", f.earlier)
+		}
+	})
+	for strings.Contains(s.text(), "line 1.") {
+		s.key(tcell.KeyPgDn)
+	}
+	for !strings.Contains(s.text(), "line 250.") {
+		s.key(tcell.KeyPgDn)
+	}
+}
+
+func TestEarlierLinesLeaveYourPlaceAlone(t *testing.T) {
+	f := newServer(t)
+	f.page = 100
+	f.gate = make(chan struct{})
+	f.aLongChat(150)
+	// Lines that wrap and lines that break, so it's rows that are counted.
+	for i, l := range f.cards["wch_long"].lines {
+		f.cards["wch_long"].lines[i].Text = l.Text + " " + strings.Repeat("and so on ", 1+i%25) + "\n\nthen this"
+	}
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("line 150.")
+	s.scrollUpUntilAsked(f)
+	was := s.text()
+	close(f.gate)
+	for len(s.said()) != 150 {
+		time.Sleep(time.Millisecond)
+	}
+	if now := s.text(); now != was {
+		t.Fatalf("the screen moved:\n%s\nbecame:\n%s", was, now)
+	}
+}
+
+func TestReadingBackNeedsAServerThatSaysThereIsMore(t *testing.T) {
+	for name, set := range map[string]func(*fakeServer){
+		"a short chat":    func(f *fakeServer) { f.page = 100 },
+		"an older server": func(f *fakeServer) { f.page = 30; f.old = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newServer(t)
+			set(f)
+			f.aLongChat(60)
+			s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+			s.see("line 60.")
+			for range 80 {
+				s.key(tcell.KeyPgUp)
+			}
+			s.text()
+			if n := f.reachedBack(); n != 0 {
+				t.Fatalf("read back %d times", n)
+			}
+		})
+	}
+}
+
+func TestAReadOfEarlierLinesThatFailsGoesAgain(t *testing.T) {
+	f := newServer(t)
+	f.page = 30
+	f.earlierFail = 1
+	f.aLongChat(60)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("line 60.")
+	s.scrollUpTo("line 1.")
+	if n := f.reachedBack(); n < 2 {
+		t.Fatalf("%d reads", n)
+	}
+	if n := len(s.said()); n != 60 {
+		t.Fatalf("%d lines", n)
+	}
+}
+
+func TestClearedLinesStayCleared(t *testing.T) {
+	f := newServer(t)
+	f.page = 30
+	f.aLongChat(60)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("line 60.")
+	s.typeText("/clear")
+	s.key(tcell.KeyEnter)
+	s.gone("line 60.")
+	for range 20 {
+		s.key(tcell.KeyUp)
+	}
+	s.text()
+	if n := f.reachedBack(); n != 0 {
+		t.Fatalf("read back %d times", n)
+	}
+}
+
+func TestClearingWhileEarlierLinesLoad(t *testing.T) {
+	f := newServer(t)
+	f.page = 30
+	f.gate = make(chan struct{})
+	f.aLongChat(60)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("line 60.")
+	s.scrollUpUntilAsked(f)
+	s.typeText("/clear")
+	s.key(tcell.KeyEnter)
+	s.gone("line 60.")
+	close(f.gate)
+	s.typeText("hello")
+	s.key(tcell.KeyEnter)
+	s.see("hello")
+	if got := s.said(); len(got) != 1 {
+		t.Fatalf("what was cleared came back: %q", got)
+	}
+}
+
+func TestSendingWhileEarlierLinesLoad(t *testing.T) {
+	f := newServer(t)
+	f.page = 100
+	f.gate = make(chan struct{})
+	f.aLongChat(150)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	s.see("line 150.")
+	s.scrollUpUntilAsked(f)
+	s.gone("line 150.")
+	s.typeText("one more thing")
+	s.key(tcell.KeyEnter)
+	s.see("one more thing")
+	close(f.gate)
+	for len(s.said()) != 151 {
+		time.Sleep(time.Millisecond)
+	}
+	s.see("one more thing") // still at the bottom
+	f.answer("wch_long", "here it is")
+	s.see("here it is") // and following it
+}
+
+func TestUpAndDownScrollTheChat(t *testing.T) {
+	f := newServer(t)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	aLongAnswer(s, f)
+	s.gone("tell me everything")
+	for range 60 {
+		s.key(tcell.KeyUp) // what a trackpad sends
+	}
+	s.see("tell me everything")
+	s.gone("thing 60.")
+	if strings.Count(s.text(), "tell me everything") != 1 {
+		t.Fatalf("scrolling brought a line back:\n%s", s.text())
+	}
+	for range 60 {
+		s.key(tcell.KeyDown)
+	}
+	s.see("thing 60.")
+}
+
+func TestPageKeysScrollWithWordsOnTheLine(t *testing.T) {
+	f := newServer(t)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	aLongAnswer(s, f)
+	s.typeText("a draft")
+	s.see("a draft")
+	s.key(tcell.KeyUp) // the cursor's
+	time.Sleep(30 * time.Millisecond)
+	s.see("thing 60.")
+	s.key(tcell.KeyPgUp)
+	s.gone("thing 60.")
+	s.see("a draft")
+	s.key(tcell.KeyPgDn)
+	s.see("thing 60.")
+}
+
+func TestScrolledUpStaysPutUntilYouSend(t *testing.T) {
+	f := newServer(t)
+	s := sit(t, f, Options{Pony: "pepper"}, 80, 24)
+	card := aLongAnswer(s, f)
+	for range 30 {
+		s.key(tcell.KeyUp)
+	}
+	s.see("thing 20.")
+	f.answer(card, "a late word")
+	time.Sleep(100 * time.Millisecond) // several looks
+	s.see("thing 20.")
+	s.gone("a late word")
+	s.typeText("and another")
+	s.key(tcell.KeyEnter)
+	s.see("a late word")
+	s.see("and another")
 }
 
 func TestComposerGrows(t *testing.T) {

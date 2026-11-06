@@ -81,16 +81,19 @@ type view struct {
 	once    sync.Once
 
 	// On tview's goroutine only.
-	onSubmit func(text string)
-	onOpen   func()
-	onBack   func()    // leaving the board
-	warned   bool      // a draft has been warned about
-	matches  []Command // what the / menu offers now
-	menuAt   int       // which of them is picked
-	menuFor  string    // the text it was made for
-	menuShut bool      // Esc put it away, for this text
-	history  []string  // what's been said here, for Up
-	recall   int       // how far back Up has gone
+	onSubmit  func(text string)
+	onOpen    func()
+	onBack    func()    // leaving the board
+	warned    bool      // a draft has been warned about
+	onEarlier func()    // scrolled near the start of what's here
+	more      bool      // the server may have lines from before these
+	asked     bool      // a read of them is on its way
+	matches   []Command // what the / menu offers now
+	menuAt    int       // which of them is picked
+	menuFor   string    // the text it was made for
+	menuShut  bool      // Esc put it away, for this text
+	history   []string  // what's been said here, for Ctrl+P
+	recall    int       // how far back Ctrl+P has gone
 }
 
 func newView(plain bool) *view {
@@ -363,6 +366,7 @@ func (v *view) add(e entry) {
 // clear empties the conversation on this screen, and nothing anywhere else.
 func (v *view) clear() {
 	v.entries = nil
+	v.more = false // scrolling up doesn't bring back what was cleared
 	v.conv.Clear()
 	v.repaint()
 }
@@ -376,26 +380,55 @@ func (v *view) repaint() {
 	go v.app.Sync()
 }
 
-// render writes it all again, for a new width.
-func (v *view) render() {
+// write puts everything here on the screen again.
+func (v *view) write() {
 	v.conv.Clear()
 	for _, e := range v.entries {
 		fmt.Fprint(v.conv, v.format(e))
 	}
-	v.conv.ScrollToEnd()
 	v.repaint()
+}
+
+// render writes it all again, for a new width.
+func (v *view) render() {
+	v.write()
+	v.conv.ScrollToEnd()
+}
+
+// earlier puts lines from before all of these at the top, and what you're
+// reading stays where it is. A text view is only added to at the end, so it's
+// all written again and moved down by what went above it. That holds at the
+// bottom too, where you are if you sent something in the meantime.
+func (v *view) earlier(p pony, lines []api.Line) {
+	if len(lines) == 0 {
+		return
+	}
+	row, column := v.conv.GetScrollOffset()
+	above := make([]entry, len(lines))
+	rows := 0
+	for i, l := range lines {
+		above[i] = turn(p, l)
+		rows += strings.Count(v.format(above[i]), "\n")
+	}
+	v.entries = append(above, v.entries...)
+	v.write()
+	v.conv.ScrollTo(row+rows, column)
+}
+
+// turn is what someone said, as the conversation shows it.
+func turn(p pony, l api.Line) entry {
+	switch l.From {
+	case "pony":
+		return entry{kind: fromPony, slug: p.Slug, text: l.Text}
+	case "you":
+		return entry{kind: fromYou, text: l.Text}
+	}
+	return entry{kind: fromOther, name: l.From, text: l.Text}
 }
 
 // line is someone's turn in the conversation.
 func (v *view) line(p pony, l api.Line) {
-	switch l.From {
-	case "pony":
-		v.add(entry{kind: fromPony, slug: p.Slug, text: l.Text})
-	case "you":
-		v.add(entry{kind: fromYou, text: l.Text})
-	default:
-		v.add(entry{kind: fromOther, name: l.From, text: l.Text})
-	}
+	v.add(turn(p, l))
 }
 
 // note is something for you rather than from anyone.
@@ -697,6 +730,12 @@ func (v *view) fitComposer() {
 // scroll hands a paging key to the conversation.
 func (v *view) scroll(ev *tcell.EventKey) {
 	v.conv.InputHandler()(ev, func(tview.Primitive) {})
+	// A screen short of the start, so the way up doesn't stop to wait.
+	row, _ := v.conv.GetScrollOffset()
+	_, _, _, height := v.conv.GetInnerRect()
+	if row < height && v.more && !v.asked && v.onEarlier != nil {
+		v.onEarlier()
+	}
 }
 
 func (v *view) composerKey(ev *tcell.EventKey) *tcell.EventKey {
@@ -719,17 +758,24 @@ func (v *view) composerKey(ev *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyPgUp, tcell.KeyPgDn:
 		v.scroll(ev)
 		return nil
-	case tcell.KeyUp:
-		// Only from an empty composer, or one showing what Up already brought
-		// back: with words in it, Up moves the cursor.
+	case tcell.KeyUp, tcell.KeyDown:
+		// A trackpad sends these to a full-screen app, so this is how it
+		// scrolls with the mouse left to the terminal, which keeps selecting
+		// text working. With words on the line they move the cursor.
+		if v.composer.GetTextLength() == 0 {
+			v.scroll(ev)
+			return nil
+		}
+	case tcell.KeyCtrlP:
+		// Only from an empty composer, or one showing what this brought back.
 		if v.composer.GetTextLength() == 0 || v.recall > 0 {
 			if v.recall < len(v.history) {
 				v.recall++
 				v.composer.SetText(v.history[len(v.history)-v.recall], true)
 			}
-			return nil
 		}
-	case tcell.KeyDown:
+		return nil
+	case tcell.KeyCtrlN:
 		if v.recall > 0 {
 			v.recall--
 			if v.recall == 0 {
@@ -737,8 +783,8 @@ func (v *view) composerKey(ev *tcell.EventKey) *tcell.EventKey {
 			} else {
 				v.composer.SetText(v.history[len(v.history)-v.recall], true)
 			}
-			return nil
 		}
+		return nil
 	}
 	return ev
 }

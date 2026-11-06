@@ -36,8 +36,8 @@ type Result struct {
 
 const keys = `Enter sends. Shift, Ctrl or Alt+Enter starts a new line, if your terminal
 reports them. For Option+Enter in Apple's Terminal: Use Option as Meta Key.
-PgUp and PgDn scroll. Up on an empty line brings back what you've sent.
-Ctrl+O opens this chat in your browser; on the board, the board.
+Up, Down or the trackpad scroll from an empty line; PgUp and PgDn always.
+Ctrl+P brings back what you've sent. Ctrl+O opens this in your browser.
 Type / for the commands: arrows move, Tab completes, Enter runs, Esc closes.
 Esc, Ctrl+C or Ctrl+D leaves, asking first if something's unsent.
 
@@ -96,6 +96,7 @@ func Run(ctx context.Context, o Options) Result {
 	v.onSubmit = s.submit
 	v.onOpen = func() { s.act(s.openBoard) }
 	v.onBack = func() { s.act(func(context.Context) { s.onBoard = false }) }
+	v.onEarlier = func() { v.asked = s.act(s.earlier) }
 	if o.Screen != nil {
 		v.app.SetScreen(o.Screen)
 	}
@@ -162,10 +163,12 @@ func (s *session) wait() time.Duration {
 }
 
 // act asks the session's goroutine to do something, from the screen's.
-func (s *session) act(f func(context.Context)) {
+func (s *session) act(f func(context.Context)) bool {
 	select {
 	case s.acts <- f:
+		return true
 	default: // a full queue is a person leaning on a key
+		return false
 	}
 }
 
@@ -277,10 +280,12 @@ func (s *session) open(ctx context.Context, slug string, say bool) bool {
 	}
 	var lines []api.Line
 	var held *api.Hold
+	more := false
 	if r != nil {
 		lines = s.m.Lines(r)
 		s.m.Set(r.Card.State, clock())
 		held = s.m.SetHold(r.Hold)
+		more = r.More
 	}
 	if log, err := s.c.ReadLog(ctx, slug, "", 100); err == nil {
 		s.m.SeedEvents(log)
@@ -291,6 +296,7 @@ func (s *session) open(ctx context.Context, slug string, say bool) bool {
 	word := placeWord(p, s.m.State)
 	s.v.do(func() {
 		s.v.clear()
+		s.v.more = more
 		s.v.setPlace(p, word)
 		s.v.composer.SetPlaceholder("Message " + s.name + "…")
 		for _, l := range lines {
@@ -496,6 +502,38 @@ func (s *session) gone(ctx context.Context) {
 	s.note("That chat has gone. This is a new one.")
 }
 
+// earlier reads the lines from before the first one here, for someone
+// scrolling up towards it. One read at a time: the view doesn't ask again
+// until this has answered.
+func (s *session) earlier(ctx context.Context) {
+	if s.fresh || s.m.Oldest <= 1 {
+		s.v.do(func() { s.v.asked, s.v.more = false, false })
+		return
+	}
+	r, err := s.c.ReadEarlier(ctx, s.card, s.m.Oldest)
+	if err != nil && isAuth(err) {
+		s.leave(err)
+		return
+	}
+	var lines []api.Line
+	if err == nil {
+		lines = s.m.Lines(r)
+	}
+	who := pony{s.slug, s.name}
+	s.v.do(func() {
+		s.v.asked = false
+		switch {
+		case !s.v.more: // cleared while this was on its way
+		case err != nil:
+			// Said where it's seen from up there, until the next look.
+			s.v.setStatus("Couldn't read further back just now. Scrolling tries again.")
+		default:
+			s.v.more = r.More
+			s.v.earlier(who, lines)
+		}
+	})
+}
+
 func (s *session) newChat() {
 	s.card, s.fresh, s.m = api.NewCard(), true, NewModel()
 	s.v.do(func() {
@@ -506,6 +544,7 @@ func (s *session) newChat() {
 
 // submit is the composer's Enter, on the screen's goroutine.
 func (s *session) submit(text string) {
+	s.v.conv.ScrollToEnd() // whatever this does is said at the bottom
 	in := ParseInput(text)
 	if in.Command != "" {
 		s.v.composer.SetText("", false)

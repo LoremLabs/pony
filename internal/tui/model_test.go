@@ -187,3 +187,23 @@ func TestOpeningLooksSoonerForAWhile(t *testing.T) {
 		t.Fatalf("not for ever: %v", got)
 	}
 }
+
+func TestLinesKeepTheEarliest(t *testing.T) {
+	m := NewModel()
+	read := func(next int, seqs ...int) {
+		r := &api.Card{Next: next}
+		for _, seq := range seqs {
+			r.Lines = append(r.Lines, api.Line{Seq: seq})
+		}
+		m.Lines(r)
+	}
+	read(7, 5, 7)
+	read(3, 2, 3) // reading back
+	if m.Oldest != 2 || m.After != 7 {
+		t.Fatalf("back: oldest %d, after %d", m.Oldest, m.After)
+	}
+	read(9, 9) // a look
+	if m.Oldest != 2 || m.After != 9 {
+		t.Fatalf("on: oldest %d, after %d", m.Oldest, m.After)
+	}
+}
