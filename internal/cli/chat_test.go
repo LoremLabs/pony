@@ -42,6 +42,7 @@ type chatServer struct {
 	reads  int
 	flaky  bool
 	posted []map[string]string
+	allows []bool // whether each posted line asked for the shared computer (the boolean true, nothing else)
 	keys   []string
 }
 
@@ -73,11 +74,26 @@ func newChatServer(t *testing.T, steps ...step) *chatServer {
 				fail(w, 409, "pony_waiting")
 				return
 			}
-			var body map[string]string
+			var raw map[string]any
 			b, _ := io.ReadAll(r.Body)
-			json.Unmarshal(b, &body)
+			json.Unmarshal(b, &raw)
+			body := map[string]string{}
+			for k, v := range raw {
+				if s, ok := v.(string); ok {
+					body[k] = s
+				}
+			}
+			allow, asked := raw["allow"]
+			if asked && allow != true {
+				cs.t.Errorf("a line's allow is the boolean true or absent, never %v", allow)
+			}
+			if m[1] == "locked" && allow == true {
+				fail(w, 403, "shared_computer_not_permitted")
+				return
+			}
 			key := r.Header.Get("Idempotency-Key")
 			cs.posted = append(cs.posted, body)
+			cs.allows = append(cs.allows, allow == true)
 			cs.keys = append(cs.keys, key)
 			if cs.flaky && len(cs.keys) == 1 {
 				answer(w, 502, map[string]any{"ok": false, "error": map[string]string{"code": "chat_failed"}, "code": "chat_failed"})
@@ -319,5 +335,38 @@ func TestAskAndWatchShowRemoteTextInert(t *testing.T) {
 		if code != ExitOK || strings.Contains(out, "\x1b") || strings.Contains(out, "\x07") || !strings.Contains(out, "fine") {
 			t.Fatalf("%v: exit %d, %q (stderr %q)", args, code, out, errOut)
 		}
+	}
+}
+
+func TestAskSharedComputer(t *testing.T) {
+	cs := newChatServer(t, step{"idle", []api.Line{mine, answered}})
+	if code, _, errOut := run("ask", "pepper", "What is 2+2?"); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if len(cs.allows) != 1 || cs.allows[0] {
+		t.Fatalf("a line that does not ask says nothing of the shared computer: %v", cs.allows)
+	}
+	if code, _, errOut := run("ask", "--shared-computer", "pepper", "run the tests"); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if len(cs.allows) != 2 || !cs.allows[1] || cs.posted[1]["text"] != "run the tests" {
+		t.Fatalf("--shared-computer asks for this line: %v %v", cs.allows, cs.posted)
+	}
+	if code, _, errOut := run("ask", "pepper", "and again"); code != ExitOK || len(cs.allows) != 3 || cs.allows[2] {
+		t.Fatalf("the next line asks nothing: it is never remembered (exit %d: %s) %v", code, errOut, cs.allows)
+	}
+}
+
+func TestAskSharedComputerRefused(t *testing.T) {
+	cs := newChatServer(t, step{"idle", []api.Line{mine, answered}})
+	code, out, errOut := run("ask", "--shared-computer", "locked", "run the tests")
+	if code != ExitAuth || out != "" || !strings.Contains(errOut, "may not let work use a shared computer, so nothing was sent") {
+		t.Fatalf("a token without the permission: refused, said, nothing printed as an answer (exit %d) out %q err %q", code, out, errOut)
+	}
+	if len(cs.posted) != 0 {
+		t.Fatalf("nothing was taken as sent: %v", cs.posted)
+	}
+	if code, _, errOut := run("ask", "locked", "run the tests"); code != ExitOK {
+		t.Fatalf("the same token without the flag sends as ever (exit %d): %s", code, errOut)
 	}
 }

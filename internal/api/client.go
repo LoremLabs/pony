@@ -353,7 +353,21 @@ var Retry = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 // one that kept the line but couldn't wake the pony (502, 503, 504) — is
 // sent again under the same key, so the pony gets the line once.
 func (c *Client) Say(ctx context.Context, slug, text, card, key string) (*Said, error) {
-	body, err := json.Marshal(map[string]string{"text": text, "card": card})
+	return c.SayAllowing(ctx, slug, text, card, key, false)
+}
+
+// SayAllowing is Say for a line whose work may use the computer you shared
+// with the pony, when sharedComputer is true. It is for this line alone,
+// and it is a request: OnePony takes it only from a token that was given
+// that permission when it was made, and refuses the line otherwise
+// (shared_computer_not_permitted) rather than sending it without. A line
+// that does not ask says nothing of it.
+func (c *Client) SayAllowing(ctx context.Context, slug, text, card, key string, sharedComputer bool) (*Said, error) {
+	line := map[string]any{"text": text, "card": card}
+	if sharedComputer {
+		line["allow"] = true
+	}
+	body, err := json.Marshal(line)
 	if err != nil {
 		return nil, err
 	}

@@ -162,6 +162,7 @@ func runAsk(args []string, b Build, stdout, stderr io.Writer) int {
 	asJSON := fs.Bool("json", false, "print the answer as one JSON value")
 	timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait for the answer (0: no limit)")
 	card := fs.String("card", "", "carry on the chat on this card, instead of starting one")
+	sharedComputer := fs.Bool("shared-computer", false, "let this message's work use the computer you shared with the pony")
 	server := fs.String("server", "", serverHelp)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, `Usage: pony ask [flags] <pony> <words…|->
@@ -173,6 +174,12 @@ the words from stdin (up to 4000 characters).
 The answer is printed as it comes. If the pony needs you first (a mail to
 approve, a question), pony says so and exits 5; Ctrl-C stops the waiting,
 not the pony. Either way 'pony watch <card>' follows it from there.
+
+--shared-computer lets this one message's work use a computer you shared
+with the pony. What the pony runs there runs as you, with your own files
+and logins. It is asked for each message and never remembered, and it
+needs a token that was given that permission when it was made: with any
+other token the message is refused, not sent without it.
 
 Flags:
 `)
@@ -214,13 +221,17 @@ Flags:
 	}
 	wait := startWaiting(stderr, *asJSON, "sending to "+slug)
 	defer wait.stop()
-	said, err := c.Say(ctx, slug, text, on, api.NewKey())
+	said, err := c.SayAllowing(ctx, slug, text, on, api.NewKey(), *sharedComputer)
 	if err != nil {
 		wait.stop()
 		if ctx.Err() != nil {
 			return gaveUp(ctx, stderr, "", "sending")
 		}
 		var ae *api.Error
+		if errors.As(err, &ae) && ae.Code == "shared_computer_not_permitted" {
+			fmt.Fprintf(stderr, "pony: this token may not let work use a shared computer, so nothing was sent. Make a token that may (on your tokens page, or sign in again and tick it), or send it without --shared-computer\n")
+			return ExitAuth
+		}
 		if errors.As(err, &ae) && ae.Code == "pony_waiting" {
 			fmt.Fprintf(stderr, "pony: %s is still getting ready; it takes lines once it's let in (its mail is held for it meanwhile)\n", slug)
 			return ExitWaiting
