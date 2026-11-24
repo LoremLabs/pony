@@ -915,6 +915,19 @@ func (s *sitting) said() []string {
 	}
 }
 
+// saidIs waits until the conversation holds n lines: for a key to have
+// landed, which the screen's own text can't say.
+func (s *sitting) saidIs(n int) {
+	s.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(s.said()) != n {
+		if time.Now().After(deadline) {
+			s.t.Fatalf("the conversation never held %d lines: %q", n, s.said())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // scrollUpTo pages up until want is on the screen.
 func (s *sitting) scrollUpTo(want string) {
 	s.t.Helper()
@@ -1060,12 +1073,20 @@ func TestClearingWhileEarlierLinesLoad(t *testing.T) {
 	s.scrollUpUntilAsked(f)
 	s.typeText("/clear")
 	s.key(tcell.KeyEnter)
+	// What is on the screen says nothing of whether a key has landed: "line
+	// 60." left it when the chat was scrolled up, and "hello" is there from
+	// the moment it is typed, in the composer. So each step waits on the
+	// conversation itself.
+	s.saidIs(0) // the clear has landed
 	s.gone("line 60.")
 	close(f.gate)
 	s.typeText("hello")
 	s.key(tcell.KeyEnter)
-	s.see("hello")
-	if got := s.said(); len(got) != 1 {
+	s.saidIs(1) // the Enter has landed
+	// The send waits its turn behind the read of earlier lines, so once it
+	// is over that read has come back, and been dropped or wrongly kept.
+	s.gone("Sending…")
+	if got := s.said(); len(got) != 1 || got[0] != "hello" {
 		t.Fatalf("what was cleared came back: %q", got)
 	}
 }
