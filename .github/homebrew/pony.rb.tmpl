@@ -13,6 +13,9 @@ class Pony < Formula
     sha256 cellar: :any_skip_relocation, x86_64_linux:  "@BOTTLE_X86_64_LINUX@"
   end
 
+  # `pony attach` hands this computer to txco (`txco attach <site>`).
+  depends_on "loremlabs/txco/txco"
+
   on_macos do
     on_arm do
       url "@BASE@/pony_@VERSION@_darwin_arm64.tar.gz"

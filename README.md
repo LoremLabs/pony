@@ -13,6 +13,8 @@ macOS, with Homebrew:
 brew install loremlabs/onepony/pony
 ```
 
+This installs txco too, which `pony attach` uses.
+
 macOS and Linux, with the install script:
 
 ```sh
@@ -106,6 +108,7 @@ pony log -f                      # what all your ponies are doing, as it happens
 pony ask pepper "What's on my calendar tomorrow?"
 pony ask pepper - < notes.txt    # the words from stdin
 pony watch wch_3f9a…             # follow a card until the pony is done with it
+pony attach pepper               # share this computer with it, in this folder (needs txco)
 pony version
 pony help [command]
 ```

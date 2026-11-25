@@ -53,6 +53,7 @@ func init() {
 		{"watch", "Follow a card until its pony is done with it", runWatch},
 		{"status", "Show what one pony is doing", runStatus},
 		{"log", "Show what your ponies have been doing; -f follows it", runLog},
+		{"attach", "Share this computer with a pony, in this folder", runAttach},
 		{"version", "Print the version of pony", runVersion},
 		{"help", "Show help for pony or one of its commands", runHelp},
 	}
